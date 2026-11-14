@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: lost-and-found
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health.php
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "3306"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_SSL
+        value: "false"
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_ALLOWED_DOMAIN
+        value: email.lcup.edu.ph
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        value: us-east-1
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_PATH_STYLE
+        value: "false"
+      - key: LOST_FOUND_VAPID_PUBLIC_KEY
+        sync: false
+      - key: LOST_FOUND_VAPID_PRIVATE_KEY_B64
+        sync: false
+      - key: LOST_FOUND_VAPID_SUBJECT
+        sync: false
