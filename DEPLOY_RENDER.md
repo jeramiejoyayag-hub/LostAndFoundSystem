@@ -16,7 +16,7 @@ Set the prompted values in Render's environment settings:
 
 | Variable | Value |
 | --- | --- |
-| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Connection details for the external MySQL database |
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | Connection details for the external MySQL database. Set `DB_HOST` to the database provider's hostname (not `localhost`) and allow connections from Render. |
 | `DB_SSL` | `true` if the database provider requires TLS; otherwise `false` |
 | `DB_SSL_CA` | Optional path to a CA certificate, if the provider requires a custom CA |
 | `GOOGLE_CLIENT_ID` | OAuth client ID for this application |

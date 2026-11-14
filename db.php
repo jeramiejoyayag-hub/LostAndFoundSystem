@@ -1,5 +1,5 @@
 <?php
-$host = getenv('DB_HOST') ?: 'localhost';
+$host = getenv('DB_HOST') ?: '127.0.0.1';
 $user = getenv('DB_USER') ?: 'root';
 $password = getenv('DB_PASSWORD');
 $password = $password === false ? '' : $password;
@@ -29,7 +29,7 @@ if ($ssl_enabled) {
 }
 
 $client_flags = $ssl_enabled ? MYSQLI_CLIENT_SSL : 0;
-if (!$conn->real_connect($host, $user, $password, $database, $port, null, $client_flags)) {
+if (!@$conn->real_connect($host, $user, $password, $database, $port, null, $client_flags)) {
     error_log("MySQL connection failed: " . $conn->connect_error);
     http_response_code(500);
     exit("Database service is temporarily unavailable.");
