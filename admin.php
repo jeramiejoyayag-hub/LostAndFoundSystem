@@ -28,6 +28,9 @@ if (!ensure_missing_item_reports_table($conn)) {
 }
 
 $admin_id = intval($_SESSION['user_id']);
+if (empty($_SESSION['expiry_ack_csrf'])) {
+    $_SESSION['expiry_ack_csrf'] = bin2hex(random_bytes(32));
+}
 $retention = retention_settings($conn);
 archive_expired_items($conn, $retention['item_days']);
 $expiring_items = expiring_items($conn, $retention['item_days'], $retention['warn_days']);
@@ -55,10 +58,15 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && empty($_POST) && empty($_FILES) && i
 // POST A NEW ITEM (only the admin can post items)
 // ---------------------------------------------------------------
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['post_item'])) {
-    $item_type = (isset($_POST['item_type']) && $_POST['item_type'] === 'Found') ? 'Found' : 'Missing';
+    $item_type = 'Found';
     $title = trim($_POST['title'] ?? '');
     $location = trim($_POST['location'] ?? '');
     $description = trim($_POST['description'] ?? '');
+    $valid_locations = [
+        'MR Building', 'SA Building', 'College of Medicine', 'Andrada Gym',
+        'Cassiciacum', 'Parking Lot', 'Carthage', 'Kalinangan', 'Sto. Nino Building',
+        'Padre Pio Building', 'Chapel', 'Mini Forest Garden', 'Agostino Building',
+    ];
     $surrendered_by = trim($_POST['surrendered_by'] ?? '');
     $surrendered_to = trim($_POST['surrendered_to'] ?? '');
     $surrendered_at_input = trim($_POST['surrendered_at'] ?? '');
@@ -75,6 +83,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['post_item'])) {
 
     if ($title === '' || $location === '' || $description === '') {
         $flash = "<div class='alert alert-danger'><svg class='icon'><use href='#i-alert'/></svg>Please fill in the title, location and description.</div>";
+    } elseif (!in_array($location, $valid_locations, true)) {
+        $flash = "<div class='alert alert-danger'><svg class='icon'><use href='#i-alert'/></svg>Select a valid item location.</div>";
     } elseif ($surrendered_by === '' || $surrendered_to === '' || !$surrender_time_valid || $surrenderer_contact === '') {
         $flash = "<div class='alert alert-danger'><svg class='icon'><use href='#i-alert'/></svg>Complete all surrender details: who surrendered the item, who received it, the time, and contact.</div>";
     } elseif (mb_strlen($surrendered_by, 'UTF-8') > 255 ||
@@ -177,20 +187,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['post_item'])) {
                     error_log("The item was posted, but its device notifications could not be sent.");
                 }
 
-                $matched_students = 0;
-                if ($item_type === 'Found') {
-                    $matched_students = notify_matching_missing_item_reports(
-                        $conn,
-                        $admin_id,
-                        $new_item_id,
-                        $title,
-                        $description,
-                        $location,
-                        $serial
-                    );
-                    if ($matched_students === false) {
-                        $upload_errors[] = "The item was posted, but matching students could not be notified.";
-                    }
+                $matched_students = notify_matching_missing_item_reports(
+                    $conn,
+                    $admin_id,
+                    $new_item_id,
+                    $title,
+                    $description,
+                    $location,
+                    $serial
+                );
+                if ($matched_students === false) {
+                    $upload_errors[] = "The item was posted, but matching students could not be notified.";
                 }
 
                 $flash = "<div class='alert alert-success'><svg class='icon'><use href='#i-check'/></svg>Item posted with serial number <strong>" . htmlspecialchars($serial) . "</strong> (" . count($saved_images) . " photo(s) attached).</div>";
@@ -253,6 +260,27 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['claim_item'])) {
 }
 
 // Redirect after any action so a page refresh does not submit the form again
+if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['ack_expiry_notifications'])) {
+    if (!hash_equals($_SESSION['expiry_ack_csrf'], $_POST['expiry_ack_csrf'] ?? '')) {
+        http_response_code(403);
+        exit("Invalid expiry notification request.");
+    }
+    $acknowledge = $conn->prepare("UPDATE item_expiry_notifications SET read_at = NOW() WHERE admin_id = ? AND read_at IS NULL");
+    if ($acknowledge) {
+        $acknowledge->bind_param("i", $admin_id);
+        if ($acknowledge->execute()) {
+            $flash = "<div class='alert alert-success'>Expired-item notifications marked as reviewed.</div>";
+        } else {
+            error_log("Could not acknowledge item expiry notifications: " . $acknowledge->error);
+            $flash = "<div class='alert alert-danger'>Could not mark expiry notifications as reviewed.</div>";
+        }
+        $acknowledge->close();
+    } else {
+        error_log("Could not prepare item expiry notification acknowledgement: " . $conn->error);
+        $flash = "<div class='alert alert-danger'>Could not mark expiry notifications as reviewed.</div>";
+    }
+}
+
 if ($flash !== '') {
     $_SESSION['admin_flash'] = $flash;
     header("Location: admin.php");
@@ -266,6 +294,30 @@ $count_unread = $conn->query("SELECT COUNT(*) as total FROM messages WHERE recei
 
 // Query Feeds
 $posted_items = $conn->query("SELECT * FROM items WHERE status != 'Archived' ORDER BY created_at DESC LIMIT 30");
+$expiry_notifications = [];
+$expiry_notification_query = $conn->prepare(
+    "SELECT item_title, serial_no, expired_at
+     FROM item_expiry_notifications
+     WHERE admin_id = ? AND read_at IS NULL
+     ORDER BY expired_at ASC"
+);
+if (!$expiry_notification_query) {
+    error_log("Could not prepare item expiry notifications: " . $conn->error);
+    http_response_code(500);
+    exit("Expiry notifications are temporarily unavailable.");
+}
+$expiry_notification_query->bind_param("i", $admin_id);
+if (!$expiry_notification_query->execute()) {
+    error_log("Could not load item expiry notifications: " . $expiry_notification_query->error);
+    $expiry_notification_query->close();
+    http_response_code(500);
+    exit("Expiry notifications are temporarily unavailable.");
+}
+$expiry_notification_result = $expiry_notification_query->get_result();
+while ($notification = $expiry_notification_result->fetch_assoc()) {
+    $expiry_notifications[] = $notification;
+}
+$expiry_notification_query->close();
 
 // Fetch Student Threads with Unread Badges
 $student_threads = $conn->query("
@@ -304,27 +356,27 @@ $student_threads = $conn->query("
             overflow: hidden;
         }
 
-        body { display: flex; }
+        body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
         .sidebar {
-            width: 230px;
+            width: 100%;
             background: linear-gradient(180deg, var(--navy-dark) 0%, var(--navy-light) 100%);
             color: #ffffff;
             display: flex;
-            flex-direction: column;
-            border-top-right-radius: 20px;
-            border-bottom-right-radius: 20px;
-            box-shadow: 4px 0 15px rgba(0,0,0,0.1);
+            flex-direction: row;
+            align-items: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
             flex-shrink: 0;
-            height: 100vh;
+            min-height: 64px;
         }
 
         .sidebar-brand {
-            padding: 20px;
+            padding: 10px 20px;
             display: flex;
             align-items: center;
             gap: 12px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-right: 1px solid rgba(255,255,255,0.1);
+            flex-shrink: 0;
         }
 
         .sidebar-brand img {
@@ -337,18 +389,19 @@ $student_threads = $conn->query("
         }
 
         .sidebar-brand h2 { font-size: 12px; line-height: 1.25; margin: 0; font-weight: 700; }
-        .sidebar-menu { list-style: none; padding: 15px 0; margin: 0; flex-grow: 1; }
+        .sidebar-menu { list-style: none; padding: 0 8px; margin: 0; display: flex; align-items: center; flex-grow: 1; flex-wrap: wrap; }
+        .sidebar-menu li { display: flex; }
 
         .sidebar-menu li a, .sidebar-menu li button {
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 12px 20px;
+            padding: 12px;
             color: rgba(255,255,255,0.85);
             text-decoration: none;
             font-size: 13px;
             font-weight: 600;
-            width: 100%;
+            width: auto;
             background: transparent;
             border: none;
             cursor: pointer;
@@ -358,13 +411,13 @@ $student_threads = $conn->query("
         .sidebar-menu li.active a, .sidebar-menu li a:hover, .sidebar-menu li button:hover {
             background: rgba(255, 255, 255, 0.15);
             color: #ffffff;
-            border-left: 4px solid var(--amber-accent);
+            box-shadow: inset 0 -3px var(--amber-accent);
         }
 
         .main-wrapper {
-            flex-grow: 1;
+            flex: 1;
             padding: 20px 25px;
-            height: 100vh;
+            min-height: 0;
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -724,6 +777,22 @@ $student_threads = $conn->query("
         .retention-body p { margin: 0 0 14px; font-size: 12px; color: #64748b; line-height: 1.5; }
         .retention-body label { display: block; font-size: 11px; font-weight: 700; margin-bottom: 4px; }
         .retention-body input { width: 100%; padding: 9px 10px; margin-bottom: 12px; border-radius: 6px; border: 1px solid #d1d5db; font-size: 13px; font-family: inherit; }
+        .expiry-notification-list { max-height: 130px; overflow-y: auto; margin: 0 0 10px; padding: 0; list-style: none; }
+        .expiry-notification-list li { padding: 7px 0; border-bottom: 1px solid #e2e8f0; font-size: 12px; }
+        .expiry-notification-list li:last-child { border-bottom: 0; }
+        @media (max-width: 1000px) {
+            html, body { height: auto; min-height: 100%; overflow: auto; }
+            .main-wrapper { height: auto; overflow: visible; }
+            .content-split { grid-template-columns: 1fr; }
+            .scrollable-column { height: auto; overflow: visible; }
+        }
+        @media (max-width: 650px) {
+            .sidebar { align-items: stretch; flex-wrap: wrap; }
+            .sidebar-brand { width: 100%; border-right: 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+            .sidebar-menu { padding: 4px; }
+            .sidebar-menu li a, .sidebar-menu li button { gap: 7px; padding: 10px 8px; font-size: 11px; }
+            .main-wrapper { padding: 14px; }
+        }
     </style>
     <link rel="stylesheet" href="theme.css">
     <script src="theme.js"></script>
@@ -766,6 +835,30 @@ $student_threads = $conn->query("
         </div>
 
         <?php echo $admin_msg; ?>
+
+        <?php if (!empty($expiry_notifications)): ?>
+            <div class="panel-card" style="border-left:4px solid #dc2626; padding:12px 16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;">
+                    <h3 class="panel-title" style="margin:0 0 8px; color:#991b1b;">
+                        <svg class="icon"><use href="#i-bell"/></svg>
+                        <?php echo count($expiry_notifications); ?> item<?php echo count($expiry_notifications) === 1 ? '' : 's'; ?> expired and archived
+                    </h3>
+                    <form method="POST" style="margin:0;">
+                        <input type="hidden" name="expiry_ack_csrf" value="<?php echo htmlspecialchars($_SESSION['expiry_ack_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
+                        <button type="submit" name="ack_expiry_notifications" value="1" style="background:#1b357a; color:#fff; border:0; border-radius:5px; padding:6px 10px; cursor:pointer; font-size:11px;">Mark reviewed</button>
+                    </form>
+                </div>
+                <ul class="expiry-notification-list">
+                    <?php foreach ($expiry_notifications as $notification): ?>
+                        <li>
+                            <strong><?php echo htmlspecialchars($notification['item_title']); ?></strong>
+                            <span class="serial-badge"><?php echo htmlspecialchars($notification['serial_no']); ?></span>
+                            <span style="color:#64748b;">Expired <?php echo date('M d, Y', strtotime($notification['expired_at'])); ?></span>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
+        <?php endif; ?>
 
         <!-- Quick Actions Row -->
         <div class="action-grid">
@@ -812,26 +905,24 @@ $student_threads = $conn->query("
                     <form method="POST" enctype="multipart/form-data">
                         <input type="hidden" name="post_item" value="1">
 
-                        <div style="display:flex; gap:8px;">
-                            <div style="flex:1;">
-                                <label style="font-size:11px; font-weight:bold;">Type *</label>
-                                <select name="item_type" required style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #ccc;">
-                                    <option value="Found">Found</option>
-                                    <option value="Missing">Missing</option>
-                                </select>
-                            </div>
-                            <div style="flex:1;">
-                                <label style="font-size:11px; font-weight:bold;">Where found / last seen *</label>
-                                <select name="location" required style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #ccc;">
-                                    <option value="">Select Location</option>
-                                    <option value="MR Building">MR Building</option>
-                                    <option value="SA Building">SA Building</option>
-                                    <option value="College of Medicine">College of Medicine</option>
-                                    <option value="Andrada Gym">Andrada Gym</option>
-                                    <option value="Cassiciacum">Cassiciacum</option>
-                                    <option value="Parking Lot">Parking Lot</option>
-                                </select>
-                            </div>
+                        <div>
+                            <label style="font-size:11px; font-weight:bold;">Where found / last seen *</label>
+                            <select name="location" required style="width:100%; padding:6px; margin-bottom:8px; border-radius:4px; border:1px solid #ccc;">
+                                <option value="">Select Location</option>
+                                <option value="MR Building">MR Building</option>
+                                <option value="SA Building">SA Building</option>
+                                <option value="College of Medicine">College of Medicine</option>
+                                <option value="Andrada Gym">Andrada Gym</option>
+                                <option value="Cassiciacum">Cassiciacum</option>
+                                <option value="Parking Lot">Parking Lot</option>
+                                <option value="Carthage">Carthage</option>
+                                <option value="Kalinangan">Kalinangan</option>
+                                <option value="Sto. Nino Building">Sto. Nino Building</option>
+                                <option value="Padre Pio Building">Padre Pio Building</option>
+                                <option value="Chapel">Chapel</option>
+                                <option value="Mini Forest Garden">Mini Forest Garden</option>
+                                <option value="Agostino Building">Agostino Building</option>
+                            </select>
                         </div>
 
                         <div id="surrenderFields" style="padding:8px; margin-bottom:8px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px;">
@@ -1056,21 +1147,6 @@ $student_threads = $conn->query("
             modal.style.display = (modal.style.display === "none" || modal.style.display === "") ? "flex" : "none";
         }
     }
-
-    function updateSurrenderByHint() {
-        var type = document.querySelector('select[name="item_type"]');
-        var hint = document.getElementById("surrenderedByHint");
-        if (!type) return;
-        var isFound = type.value === "Found";
-        if (hint) {
-            hint.textContent = isFound
-                ? "Enter the person who handed in this found item."
-                : "Enter the person who reported this missing item.";
-        }
-    }
-
-    document.querySelector('select[name="item_type"]').addEventListener("change", updateSurrenderByHint);
-    updateSurrenderByHint();
 
     function previewImages(event) {
         var container = document.getElementById("imagePreviewContainer");

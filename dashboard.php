@@ -70,7 +70,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['report_missing_item']
     $report_title = trim($_POST['report_title'] ?? '');
     $report_description = trim($_POST['report_description'] ?? '');
     $report_location = trim($_POST['report_location'] ?? '');
-    $valid_locations = ['', 'MR Building', 'SA Building', 'College of Medicine', 'Andrada Gym', 'Cassiciacum', 'Parking Lot'];
+    $valid_locations = [
+        '', 'MR Building', 'SA Building', 'College of Medicine', 'Andrada Gym',
+        'Cassiciacum', 'Parking Lot', 'Carthage', 'Kalinangan', 'Sto. Nino Building',
+        'Padre Pio Building', 'Chapel', 'Mini Forest Garden', 'Agostino Building',
+    ];
 
     if ($report_title === '' || $report_description === '') {
         $missing_report_flash = "Enter the item name and a description to create an alert.";
@@ -259,27 +263,27 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             overflow: hidden;
         }
 
-        body { display: flex; }
+        body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
         .sidebar {
-            width: 230px;
+            width: 100%;
             background: linear-gradient(180deg, var(--navy-dark) 0%, var(--navy-light) 100%);
             color: #ffffff;
             display: flex;
-            flex-direction: column;
-            border-top-right-radius: 20px;
-            border-bottom-right-radius: 20px;
-            box-shadow: 4px 0 15px rgba(0,0,0,0.1);
+            flex-direction: row;
+            align-items: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
             flex-shrink: 0;
-            height: 100vh;
+            min-height: 64px;
         }
 
         .sidebar-brand {
-            padding: 20px;
+            padding: 10px 20px;
             display: flex;
             align-items: center;
             gap: 12px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            border-right: 1px solid rgba(255,255,255,0.1);
+            flex-shrink: 0;
         }
 
         .sidebar-brand img {
@@ -293,18 +297,19 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 
         .sidebar-brand h2 { font-size: 12px; line-height: 1.25; margin: 0; font-weight: 700; }
 
-        .sidebar-menu { list-style: none; padding: 15px 0; margin: 0; flex-grow: 1; }
+        .sidebar-menu { list-style: none; padding: 0 8px; margin: 0; display: flex; align-items: center; flex-grow: 1; flex-wrap: wrap; }
+        .sidebar-menu li { display: flex; }
 
         .sidebar-menu li a, .sidebar-menu li button {
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 12px 20px;
+            padding: 12px;
             color: rgba(255,255,255,0.85);
             text-decoration: none;
             font-size: 13px;
             font-weight: 600;
-            width: 100%;
+            width: auto;
             background: transparent;
             border: none;
             cursor: pointer;
@@ -314,13 +319,13 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         .sidebar-menu li.active a, .sidebar-menu li a:hover, .sidebar-menu li button:hover {
             background: rgba(255, 255, 255, 0.15);
             color: #ffffff;
-            border-left: 4px solid var(--amber-accent);
+            box-shadow: inset 0 -3px var(--amber-accent);
         }
 
         .main-wrapper {
-            flex-grow: 1;
+            flex: 1;
             padding: 20px 25px;
-            height: 100vh;
+            min-height: 0;
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -437,6 +442,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             flex-grow: 1;
             min-height: 0;
         }
+        .content-split.admin-feed { grid-template-columns: 1fr; }
 
         .posts-only-scroll { overflow-y: auto; padding-right: 10px; padding-bottom: 20px; height: 100%; }
         .posts-only-scroll::-webkit-scrollbar { width: 6px; }
@@ -571,6 +577,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         }
 
         .chat-modal-header span.close-btn { cursor: pointer; font-size: 18px; }
+        .chat-modal-header button.close-btn { background: transparent; color: #fff; border: 0; cursor: pointer; padding: 0; }
 
         .chat-modal-body {
             padding: 18px;
@@ -581,7 +588,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         }
 
         @media (max-width: 1000px) {
-            html, body { overflow: auto; height: auto; }
+            html, body { overflow: auto; height: auto; min-height: 100%; }
             .main-wrapper { height: auto; overflow: visible; }
             .action-grid { grid-template-columns: 1fr; }
             .content-split { grid-template-columns: 1fr; }
@@ -737,6 +744,18 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         .match-alert-item strong { display:block; color:#1e293b; font-size:13px; }
         .match-alert-item small { color:#475569; font-size:11px; }
         .match-alert-item button { flex-shrink:0; border:0; border-radius:6px; padding:8px 11px; color:#fff; background:#1b357a; font-weight:700; cursor:pointer; }
+        .claim-help-button { width:32px; height:32px; flex-shrink:0; border:0; border-radius:50%; background:var(--navy-dark); color:#fff; font-size:19px; font-weight:800; cursor:pointer; }
+        .claim-help-button:hover { background:var(--navy-light); }
+        @media (max-width: 650px) {
+            .sidebar { align-items: stretch; flex-wrap: wrap; }
+            .sidebar-brand { width: 100%; border-right: 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+            .sidebar-menu { padding: 4px; }
+            .sidebar-menu li a, .sidebar-menu li button { gap: 7px; padding: 10px 8px; font-size: 11px; }
+            .sidebar-foot { padding: 10px; }
+            .main-wrapper { padding: 14px; }
+            .top-header-bar { flex-wrap: wrap; }
+            .search-bar-container { max-width: none; }
+        }
     </style>
     <link rel="stylesheet" href="theme.css">
     <script src="theme.js"></script>
@@ -781,6 +800,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                 <input type="text" id="searchInput" name="search" placeholder="Search items, locations, serial no..." value="<?php echo htmlspecialchars($search); ?>">
                 <button type="button" class="voice-btn" onclick="startVoiceSearch()" title="Voice Search"><svg class="icon"><use href="#i-mic"/></svg></button>
             </form>
+            <button type="button" class="claim-help-button" onclick="toggleClaimHelpModal(true)" aria-label="How to claim an item" title="How to claim an item">i</button>
         </div>
 
         <!-- Quick Actions -->
@@ -812,7 +832,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         </div>
 
         <!-- Main Workspace Split -->
-        <div class="content-split">
+        <div class="content-split<?php echo $is_admin ? ' admin-feed' : ''; ?>">
 
             <div class="posts-only-scroll">
 
@@ -919,18 +939,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 
             </div>
 
-            <!-- How to claim -->
             <div>
-                <div class="panel-card how-to">
-                    <h3 class="panel-title"><svg class="icon"><use href="#i-info"/></svg>How to claim an item</h3>
-                    <ol>
-                        <li>Find your item in the list and note its serial number.</li>
-                        <li>Click <strong>Is this yours? Message Admin</strong>.</li>
-                        <li>Log in or create an account when asked.</li>
-                        <li>Answer the assistant's questions: name, year and section, contact number, email, and details about your item.</li>
-                        <li>The admin will review your details and reply in the chat.</li>
-                    </ol>
-                </div>
                 <?php if ($is_student): ?>
                     <div class="panel-card">
                         <h3 class="panel-title"><svg class="icon"><use href="#i-bell"/></svg>Get alerts for a missing item</h3>
@@ -961,6 +970,13 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                                 <option value="Andrada Gym">Andrada Gym</option>
                                 <option value="Cassiciacum">Cassiciacum</option>
                                 <option value="Parking Lot">Parking Lot</option>
+                                <option value="Carthage">Carthage</option>
+                                <option value="Kalinangan">Kalinangan</option>
+                                <option value="Sto. Nino Building">Sto. Nino Building</option>
+                                <option value="Padre Pio Building">Padre Pio Building</option>
+                                <option value="Chapel">Chapel</option>
+                                <option value="Mini Forest Garden">Mini Forest Garden</option>
+                                <option value="Agostino Building">Agostino Building</option>
                             </select>
                             <button type="submit" class="auth-submit">Save Missing-Item Alert</button>
                         </form>
@@ -976,6 +992,24 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 
         </div>
 
+    </div>
+
+    <div class="chat-modal-overlay" id="claimHelpModal" onclick="if (event.target === this) toggleClaimHelpModal(false)">
+        <div class="auth-card">
+            <div class="chat-modal-header">
+                <span><svg class="icon"><use href="#i-info"/></svg>How to claim an item</span>
+                <button type="button" class="close-btn" onclick="toggleClaimHelpModal(false)" aria-label="Close help"><svg class="icon"><use href="#i-close"/></svg></button>
+            </div>
+            <div class="auth-body how-to">
+                <ol>
+                    <li>Find your item in the list and note its serial number.</li>
+                    <li>Click <strong>Is this yours? Message Admin</strong>.</li>
+                    <li>Log in or create an account when asked.</li>
+                    <li>Answer the assistant's questions: name, year and section, contact number, email, and details about your item.</li>
+                    <li>The admin will review your details and reply in the chat.</li>
+                </ol>
+            </div>
+        </div>
     </div>
 
     <?php if (!$is_logged_in): ?>
@@ -1111,6 +1145,15 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         if (m) m.style.display = "flex";
         renderGoogleButton();
     }
+
+    function toggleClaimHelpModal(show) {
+        var modal = document.getElementById("claimHelpModal");
+        if (modal) modal.style.display = show ? "flex" : "none";
+    }
+
+    document.addEventListener("keydown", function(event) {
+        if (event.key === "Escape") toggleClaimHelpModal(false);
+    });
 
     /* ---------------------------------------------------------- Google sign-in */
     function initGoogle() {

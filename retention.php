@@ -42,10 +42,121 @@ function save_retention($conn, $item_days, $warn_days) {
     return $ok;
 }
 
-// Archives every item that stayed posted longer than the allowed days
+function ensure_expired_item_notifications_table($conn) {
+    $sql = "CREATE TABLE IF NOT EXISTS item_expiry_notifications (
+                id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                item_id INT NOT NULL,
+                admin_id INT NOT NULL,
+                item_title VARCHAR(255) NOT NULL,
+                serial_no VARCHAR(50) NOT NULL,
+                expired_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                read_at DATETIME NULL,
+                UNIQUE KEY unique_item_admin (item_id, admin_id)
+            )";
+    if (!$conn->query($sql)) {
+        error_log("Could not prepare item expiry notifications: " . $conn->error);
+        return false;
+    }
+    return true;
+}
+
+// Archives expired active items and records one durable notice for each admin.
 function archive_expired_items($conn, $item_days) {
     $item_days = max(1, intval($item_days));
-    $conn->query("UPDATE items SET status = 'Archived' WHERE status != 'Archived' AND created_at < NOW() - INTERVAL $item_days DAY");
+    if (!ensure_expired_item_notifications_table($conn) || !$conn->begin_transaction()) {
+        error_log("Could not start item expiry processing: " . $conn->error);
+        return false;
+    }
+
+    $expired = $conn->query(
+        "SELECT id, title, DATE_ADD(created_at, INTERVAL $item_days DAY) AS expired_at,
+                COALESCE(NULLIF(serial_no, ''), CONCAT('ITEM-', LPAD(id, 4, '0'))) AS serial_no
+         FROM items
+         WHERE status NOT IN ('Archived', 'Claimed')
+           AND created_at < NOW() - INTERVAL $item_days DAY
+         FOR UPDATE"
+    );
+    if (!$expired) {
+        error_log("Could not load expired items: " . $conn->error);
+        $conn->rollback();
+        return false;
+    }
+
+    $items = [];
+    while ($item = $expired->fetch_assoc()) {
+        $items[] = $item;
+    }
+    if (empty($items)) {
+        if (!$conn->commit()) {
+            error_log("Could not finish item expiry check: " . $conn->error);
+            $conn->rollback();
+            return false;
+        }
+        return true;
+    }
+
+    $admins = $conn->query("SELECT DISTINCT id FROM users WHERE role = 'admin' OR usertype = 'admin'");
+    if (!$admins) {
+        error_log("Could not load administrators for item expiry notifications: " . $conn->error);
+        $conn->rollback();
+        return false;
+    }
+    $admin_ids = [];
+    while ($admin = $admins->fetch_assoc()) {
+        $admin_ids[] = intval($admin['id']);
+    }
+    if (empty($admin_ids)) {
+        error_log("Expired items were not archived because no administrator could receive a notification.");
+        $conn->rollback();
+        return false;
+    }
+
+    $notification = $conn->prepare(
+        "INSERT IGNORE INTO item_expiry_notifications (item_id, admin_id, item_title, serial_no, expired_at)
+         VALUES (?, ?, ?, ?, ?)"
+    );
+    $archive = $conn->prepare("UPDATE items SET status = 'Archived' WHERE id = ? AND status NOT IN ('Archived', 'Claimed')");
+    if (!$notification || !$archive) {
+        error_log("Could not prepare item expiry updates: " . $conn->error);
+        if ($notification) $notification->close();
+        if ($archive) $archive->close();
+        $conn->rollback();
+        return false;
+    }
+
+    foreach ($items as $item) {
+        $item_id = intval($item['id']);
+        $title = $item['title'];
+        $serial = $item['serial_no'];
+        $expired_at = $item['expired_at'];
+        foreach ($admin_ids as $admin_id) {
+            $notification->bind_param("iisss", $item_id, $admin_id, $title, $serial, $expired_at);
+            if (!$notification->execute()) {
+                error_log("Could not save an item expiry notification: " . $notification->error);
+                $notification->close();
+                $archive->close();
+                $conn->rollback();
+                return false;
+            }
+        }
+        $archive->bind_param("i", $item_id);
+        if (!$archive->execute()) {
+            error_log("Could not archive an expired item: " . $archive->error);
+            $notification->close();
+            $archive->close();
+            $conn->rollback();
+            return false;
+        }
+    }
+
+    $notification->close();
+    $archive->close();
+    if (!$conn->commit()) {
+        error_log("Could not commit item expiry updates: " . $conn->error);
+        $conn->rollback();
+        return false;
+    }
+    return true;
 }
 
 // Items that will be removed within the warning window (soonest first)
