@@ -1,8 +1,10 @@
 <?php
+ini_set('display_errors', 1); error_reporting(E_ALL);
 session_start();
 include 'db.php';
 include 'retention.php';
 include 'surrender_fields.php';
+include 'claim_fields.php';
 include 'missing_item_alerts.php';
 include 'item_storage.php';
 
@@ -22,6 +24,10 @@ if (!ensure_item_surrender_columns($conn)) {
     http_response_code(500);
     exit("Could not prepare surrender details: " . htmlspecialchars($conn->error));
 }
+if (!ensure_item_claims_table($conn)) {
+    http_response_code(500);
+    exit("Could not prepare claim details: " . htmlspecialchars($conn->error));
+}
 if (!ensure_missing_item_reports_table($conn)) {
     http_response_code(500);
     exit("Could not prepare missing-item alerts: " . htmlspecialchars($conn->error));
@@ -30,6 +36,12 @@ if (!ensure_missing_item_reports_table($conn)) {
 $admin_id = intval($_SESSION['user_id']);
 if (empty($_SESSION['expiry_ack_csrf'])) {
     $_SESSION['expiry_ack_csrf'] = bin2hex(random_bytes(32));
+}
+if (empty($_SESSION['claim_csrf'])) {
+    $_SESSION['claim_csrf'] = bin2hex(random_bytes(32));
+}
+if (empty($_SESSION['thread_archive_csrf'])) {
+    $_SESSION['thread_archive_csrf'] = bin2hex(random_bytes(32));
 }
 $retention = retention_settings($conn);
 archive_expired_items($conn, $retention['item_days']);
@@ -252,10 +264,71 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['archive_item'])) {
 // MARK AN ITEM AS CLAIMED (after the owner was verified in the chat)
 // ---------------------------------------------------------------
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['claim_item'])) {
-    $claim_id = intval($_POST['item_id'] ?? 0);
-    if ($claim_id > 0) {
-        $conn->query("UPDATE items SET status = 'Claimed' WHERE id = $claim_id");
-        $flash = "<div class='alert alert-success'><svg class='icon'><use href='#i-check'/></svg>Item marked as claimed. It now shows as returned to its owner.</div>";
+    $submitted_claim_csrf = $_POST['claim_csrf'] ?? '';
+    if (!is_string($submitted_claim_csrf) || !hash_equals($_SESSION['claim_csrf'], $submitted_claim_csrf)) {
+        http_response_code(403);
+        exit("Invalid claim confirmation request.");
+    }
+
+    $claim_id = filter_var($_POST['item_id'] ?? null, FILTER_VALIDATE_INT);
+    $claimant_name = is_string($_POST['claimant_name'] ?? null) ? trim($_POST['claimant_name']) : '';
+    $claimant_year = is_string($_POST['claimant_year'] ?? null) ? trim($_POST['claimant_year']) : '';
+    $claimant_contact = is_string($_POST['claimant_contact'] ?? null) ? trim($_POST['claimant_contact']) : '';
+
+    if ($claim_id === false || $claim_id < 1) {
+        $flash = "<div class='alert alert-danger'>Select a valid item to record the claim.</div>";
+    } elseif ($claimant_name === '' || $claimant_year === '') {
+        $flash = "<div class='alert alert-danger'>Enter the claimant's name and year/program.</div>";
+    } elseif (mb_strlen($claimant_name, 'UTF-8') > 255 ||
+        mb_strlen($claimant_year, 'UTF-8') > 100 ||
+        mb_strlen($claimant_contact, 'UTF-8') > 255) {
+        $flash = "<div class='alert alert-danger'>Claimant name, year/program, or contact information is too long.</div>";
+    } else {
+        $claim_update = $conn->prepare(
+            "UPDATE items SET status = 'Claimed'
+             WHERE id = ? AND status NOT IN ('Archived', 'Claimed')"
+        );
+        $claim_insert = $conn->prepare(
+            "INSERT INTO item_claims (item_id, claimant_name, claimant_year, claimant_contact, claimed_at)
+             VALUES (?, ?, ?, ?, NOW())"
+        );
+        if (!$claim_update || !$claim_insert) {
+            error_log("Could not prepare item claim: " . $conn->error);
+            $flash = "<div class='alert alert-danger'>Could not record the claim. Please try again.</div>";
+            if ($claim_update) $claim_update->close();
+            if ($claim_insert) $claim_insert->close();
+        } elseif (!$conn->begin_transaction()) {
+            error_log("Could not start item claim transaction: " . $conn->error);
+            $flash = "<div class='alert alert-danger'>Could not record the claim. Please try again.</div>";
+            $claim_update->close();
+            $claim_insert->close();
+        } else {
+            $claim_update->bind_param("i", $claim_id);
+            if (!$claim_update->execute()) {
+                error_log("Could not mark item as claimed: " . $claim_update->error);
+                $conn->rollback();
+                $flash = "<div class='alert alert-danger'>Could not record the claim. Please try again.</div>";
+            } elseif ($claim_update->affected_rows !== 1) {
+                $conn->rollback();
+                $flash = "<div class='alert alert-danger'>This item could not be claimed. It may already be claimed, archived, or no longer available.</div>";
+            } else {
+                $claimant_contact_value = $claimant_contact === '' ? null : $claimant_contact;
+                $claim_insert->bind_param("isss", $claim_id, $claimant_name, $claimant_year, $claimant_contact_value);
+                if (!$claim_insert->execute()) {
+                    error_log("Could not record claimant details: " . $claim_insert->error);
+                    $conn->rollback();
+                    $flash = "<div class='alert alert-danger'>Could not record the claim. Please try again.</div>";
+                } elseif (!$conn->commit()) {
+                    error_log("Could not commit item claim: " . $conn->error);
+                    $conn->rollback();
+                    $flash = "<div class='alert alert-danger'>Could not record the claim. Please try again.</div>";
+                } else {
+                    $flash = "<div class='alert alert-success'><svg class='icon'><use href='#i-check'/></svg>Claim details recorded and item marked as claimed.</div>";
+                }
+            }
+            $claim_update->close();
+            $claim_insert->close();
+        }
     }
 }
 
@@ -293,7 +366,16 @@ $count_unclaimed = $conn->query("SELECT COUNT(*) as total FROM items WHERE statu
 $count_unread = $conn->query("SELECT COUNT(*) as total FROM messages WHERE receiver_id = $admin_id AND is_read = 0")->fetch_assoc()['total'];
 
 // Query Feeds
-$posted_items = $conn->query("SELECT * FROM items WHERE status != 'Archived' ORDER BY created_at DESC LIMIT 30");
+$posted_items = $conn->query(
+    "SELECT i.*, c.claimant_name AS recorded_claimant_name,
+            c.claimant_year AS recorded_claimant_year,
+            c.claimant_contact AS recorded_claimant_contact,
+            c.claimed_at AS recorded_claimed_at
+     FROM items i
+     LEFT JOIN item_claims c ON c.item_id = i.id
+     WHERE i.status != 'Archived'
+     ORDER BY i.created_at DESC LIMIT 30"
+);
 $expiry_notifications = [];
 $expiry_notification_query = $conn->prepare(
     "SELECT item_title, serial_no, expired_at
@@ -320,12 +402,35 @@ while ($notification = $expiry_notification_result->fetch_assoc()) {
 $expiry_notification_query->close();
 
 // Fetch Student Threads with Unread Badges
+$thread_archive_table = $conn->query(
+    "CREATE TABLE IF NOT EXISTS admin_archived_threads (
+        admin_id INT NOT NULL,
+        student_id INT NOT NULL,
+        archived_at DATETIME NOT NULL,
+        PRIMARY KEY (admin_id, student_id)
+    ) ENGINE=InnoDB"
+);
+if (!$thread_archive_table) {
+    error_log("Could not prepare archived student conversations: " . $conn->error);
+    http_response_code(500);
+    exit("Archived student conversations are temporarily unavailable.");
+}
 $student_threads = $conn->query("
     SELECT DISTINCT u.id as student_id, u.full_name,
     (SELECT COUNT(*) FROM messages m2 WHERE m2.sender_id = u.id AND m2.receiver_id = $admin_id AND m2.is_read = 0) as unread_count
     FROM messages m 
     JOIN users u ON (m.sender_id = u.id OR m.receiver_id = u.id) 
-    WHERE u.id != $admin_id 
+    WHERE u.id != $admin_id
+    AND NOT EXISTS (
+        SELECT 1 FROM admin_archived_threads a
+        WHERE a.admin_id = $admin_id
+          AND a.student_id = u.id
+          AND a.archived_at >= (
+              SELECT MAX(mm.created_at) FROM messages mm
+              WHERE (mm.sender_id = u.id AND mm.receiver_id = $admin_id)
+                 OR (mm.sender_id = $admin_id AND mm.receiver_id = u.id)
+          )
+    )
     ORDER BY unread_count DESC, m.created_at DESC
 ");
 ?>
@@ -335,7 +440,7 @@ $student_threads = $conn->query("
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Admin Control Center - La Consolacion University Philippines</title>
+    <title>Admin Control Center - Findersync Lost and Found System</title>
     <style>
         :root {
             --navy-dark: #1b357a;
@@ -356,27 +461,31 @@ $student_threads = $conn->query("
             overflow: hidden;
         }
 
-        body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        body { display: flex; }
 
         .sidebar {
-            width: 100%;
+            width: 230px;
             background: linear-gradient(180deg, var(--navy-dark) 0%, var(--navy-light) 100%);
             color: #ffffff;
             display: flex;
-            flex-direction: row;
-            align-items: center;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            flex-direction: column;
+            border-top-right-radius: 20px;
+            border-bottom-right-radius: 20px;
+            box-shadow: 4px 0 15px rgba(0,0,0,0.1);
             flex-shrink: 0;
-            min-height: 64px;
+            height: 100vh;
+            overflow: hidden;
+            transition: width 0.2s ease, flex-basis 0.2s ease;
         }
 
+        body.sidebar-collapsed .sidebar { width: 0; flex-basis: 0; border-radius: 0; box-shadow: none; }
+
         .sidebar-brand {
-            padding: 10px 20px;
+            padding: 20px;
             display: flex;
             align-items: center;
             gap: 12px;
-            border-right: 1px solid rgba(255,255,255,0.1);
-            flex-shrink: 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
         }
 
         .sidebar-brand img {
@@ -389,19 +498,18 @@ $student_threads = $conn->query("
         }
 
         .sidebar-brand h2 { font-size: 12px; line-height: 1.25; margin: 0; font-weight: 700; }
-        .sidebar-menu { list-style: none; padding: 0 8px; margin: 0; display: flex; align-items: center; flex-grow: 1; flex-wrap: wrap; }
-        .sidebar-menu li { display: flex; }
+        .sidebar-menu { list-style: none; padding: 15px 0; margin: 0; flex-grow: 1; }
 
         .sidebar-menu li a, .sidebar-menu li button {
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 12px;
+            padding: 12px 20px;
             color: rgba(255,255,255,0.85);
             text-decoration: none;
             font-size: 13px;
             font-weight: 600;
-            width: auto;
+            width: 100%;
             background: transparent;
             border: none;
             cursor: pointer;
@@ -411,13 +519,13 @@ $student_threads = $conn->query("
         .sidebar-menu li.active a, .sidebar-menu li a:hover, .sidebar-menu li button:hover {
             background: rgba(255, 255, 255, 0.15);
             color: #ffffff;
-            box-shadow: inset 0 -3px var(--amber-accent);
+            border-left: 4px solid var(--amber-accent);
         }
 
         .main-wrapper {
-            flex: 1;
+            flex-grow: 1;
             padding: 20px 25px;
-            min-height: 0;
+            height: 100vh;
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -432,8 +540,12 @@ $student_threads = $conn->query("
             flex-shrink: 0;
         }
 
+        .top-header-title { display: flex; align-items: center; gap: 12px; }
         .top-header-title h1 { color: var(--navy-dark); margin: 0; font-size: 18px; font-weight: 800; }
         .top-header-title p { margin: 2px 0 0 0; color: #6b7280; font-size: 11px; font-weight: 600; }
+        .sidebar-toggle { width: 36px; height: 36px; flex-shrink: 0; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: var(--navy-dark); font-size: 19px; cursor: pointer; }
+        .sidebar-toggle:hover { background: #eff6ff; }
+        .sidebar-toggle:focus-visible { outline: 2px solid var(--navy-light); outline-offset: 2px; }
 
         .action-grid {
             display: grid;
@@ -745,6 +857,7 @@ $student_threads = $conn->query("
         /* ===== Generate Report pop-up ===== */
         #reportModal .modal-content { max-width: 420px; height: auto; }
         #retentionModal .modal-content { max-width: 420px; height: auto; }
+        #claimModal .modal-content { max-width: 520px; height: auto; max-height: 90vh; overflow-y: auto; }
         .report-body { padding: 18px 20px 20px; }
         .report-body p { margin: 0 0 14px 0; font-size: 12px; color: #64748b; line-height: 1.5; }
         .report-body label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; margin-bottom: 3px; }
@@ -772,6 +885,21 @@ $student_threads = $conn->query("
             cursor: pointer;
             font-family: inherit;
         }
+        .claim-form { padding: 18px 20px 20px; overflow-y: auto; }
+        .claim-form p { margin: 0 0 14px; color: #64748b; font-size: 13px; }
+        .claim-form label { display: block; margin: 0 0 4px; font-size: 12px; font-weight: 700; }
+        .claim-form input {
+            width: 100%;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            border: 1px solid #cbd5e1;
+            border-radius: 7px;
+            font: inherit;
+        }
+        .claim-form-actions { display: flex; gap: 10px; margin-top: 4px; }
+        .claim-form-actions button { flex: 1; padding: 10px; border: 0; border-radius: 7px; font-weight: 700; cursor: pointer; }
+        .claim-confirm { background: #16a34a; color: #fff; }
+        .claim-cancel { background: #e2e8f0; color: #334155; }
         .report-submit:hover { background: var(--navy-light); }
         .retention-body { padding: 18px 20px 20px; }
         .retention-body p { margin: 0 0 14px; font-size: 12px; color: #64748b; line-height: 1.5; }
@@ -787,10 +915,6 @@ $student_threads = $conn->query("
             .scrollable-column { height: auto; overflow: visible; }
         }
         @media (max-width: 650px) {
-            .sidebar { align-items: stretch; flex-wrap: wrap; }
-            .sidebar-brand { width: 100%; border-right: 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
-            .sidebar-menu { padding: 4px; }
-            .sidebar-menu li a, .sidebar-menu li button { gap: 7px; padding: 10px 8px; font-size: 11px; }
             .main-wrapper { padding: 14px; }
         }
     </style>
@@ -801,7 +925,7 @@ $student_threads = $conn->query("
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></symbol><symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol><symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol><symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></symbol><symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol><symbol id="i-pin" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></symbol><symbol id="i-id" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="2"/><line x1="14" y1="10" x2="18" y2="10"/><line x1="14" y1="14" x2="18" y2="14"/></symbol><symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol><symbol id="i-bot" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></symbol><symbol id="i-mail" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22 6 12 13 2 6"/></symbol><symbol id="i-package" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></symbol><symbol id="i-inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol><symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol><symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol><symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol><symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></symbol><symbol id="i-login" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></symbol><symbol id="i-hash" viewBox="0 0 24 24"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></symbol><symbol id="i-archive" viewBox="0 0 24 24"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></symbol><symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol></svg>
 
     <!-- Sidebar -->
-    <div class="sidebar">
+    <div class="sidebar" id="sidebar">
         <div class="sidebar-brand">
             <img src="logo.jpg" alt="LCUP Logo" onerror="this.style.display='none'">
             <h2>La Consolacion University Philippines</h2>
@@ -818,8 +942,8 @@ $student_threads = $conn->query("
                     <?php endif; ?>
                 </button>
             </li>
-            <li><button onclick="toggleReportModal()"><svg class="icon"><use href="#i-file"/></svg>Generate Report (Excel)</button></li>
             <li><a href="logout.php"><svg class="icon"><use href="#i-logout"/></svg>Logout</a></li>
+            <li><button onclick="toggleReportModal()"><svg class="icon"><use href="#i-file"/></svg>Generate Report (Excel)</button></li>
         </ul>
     </div>
 
@@ -829,8 +953,11 @@ $student_threads = $conn->query("
         <!-- Top Header Bar -->
         <div class="top-header-bar">
             <div class="top-header-title">
-                <h1>ADMIN CONTROL CENTER</h1>
-                <p>LA CONSOLACION UNIVERSITY PHILIPPINES - Lost & Found Management</p>
+                <button type="button" class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" aria-controls="sidebar" aria-expanded="true" aria-label="Hide navigation" title="Hide navigation"><span aria-hidden="true">☰</span></button>
+                <div>
+                    <h1>ADMIN CONTROL CENTER</h1>
+                    <p>Findersync Lost and Found System - Management</p>
+                </div>
             </div>
         </div>
 
@@ -970,7 +1097,7 @@ $student_threads = $conn->query("
 
                     <?php if ($posted_items && $posted_items->num_rows > 0): ?>
                         <?php while ($it = $posted_items->fetch_assoc()):
-                            $it_type = (($it['item_type'] ?? '') === 'Found') ? 'Found' : 'Missing';
+                            $it_type = 'Missing';
                             $it_serial = !empty($it['serial_no']) ? $it['serial_no'] : 'ITEM-' . str_pad($it['id'], 4, '0', STR_PAD_LEFT);
                             $it_claimed = ($it['status'] === 'Claimed');
                         ?>
@@ -995,12 +1122,24 @@ $student_threads = $conn->query("
                                                 Contact (admin-only): <?php echo htmlspecialchars($it['surrenderer_contact'] ?? ''); ?>
                                             </div>
                                         <?php endif; ?>
+                                        <?php if ($it_claimed): ?>
+                                            <div style="font-size:11px; color:#166534; margin-top:6px;">
+                                                <?php if (!empty($it['recorded_claimant_name'])): ?>
+                                                    Claimed by: <?php echo htmlspecialchars($it['recorded_claimant_name'], ENT_QUOTES, 'UTF-8'); ?><br>
+                                                    Year/Program: <?php echo htmlspecialchars($it['recorded_claimant_year'] ?? '', ENT_QUOTES, 'UTF-8'); ?>
+                                                    | Contact: <?php echo htmlspecialchars(($it['recorded_claimant_contact'] ?? '') !== '' ? $it['recorded_claimant_contact'] : 'Not provided', ENT_QUOTES, 'UTF-8'); ?><br>
+                                                    Date claimed: <?php echo !empty($it['recorded_claimed_at']) ? date('M d, Y h:i A', strtotime($it['recorded_claimed_at'])) : 'Not recorded'; ?>
+                                                <?php else: ?>
+                                                    Claim details not recorded (claimed before this update).
+                                                <?php endif; ?>
+                                            </div>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
                                 <form method="POST" style="display:flex; gap:8px; margin-top:8px;">
                                     <input type="hidden" name="item_id" value="<?php echo $it['id']; ?>">
                                     <?php if (!$it_claimed): ?>
-                                        <button type="submit" name="claim_item" value="1" onclick="return confirm('Mark this item as claimed (returned to its owner)?');" style="background:#16a34a; color:#fff; border:none; padding:6px 10px; border-radius:4px; font-size:11px; font-weight:bold; cursor:pointer;"><svg class="icon"><use href="#i-check"/></svg>Mark as Claimed</button>
+                                        <button type="button" onclick="openClaimModal(<?php echo intval($it['id']); ?>, this)" data-item-title="<?php echo htmlspecialchars($it['title'], ENT_QUOTES, 'UTF-8'); ?>" style="background:#16a34a; color:#fff; border:none; padding:6px 10px; border-radius:4px; font-size:11px; font-weight:bold; cursor:pointer;"><svg class="icon"><use href="#i-check"/></svg>Mark as Claimed</button>
                                     <?php endif; ?>
                                     <button type="submit" name="archive_item" value="1" onclick="return confirm('Archive this item? It will no longer appear on the home screen.');" style="background:#64748b; color:#fff; border:none; padding:6px 10px; border-radius:4px; font-size:11px; font-weight:bold; cursor:pointer;"><svg class="icon"><use href="#i-archive"/></svg>Archive</button>
                                 </form>
@@ -1014,6 +1153,36 @@ $student_threads = $conn->query("
 
         </div>
 
+    </div>
+
+    <!-- POP-UP MODAL: CONFIRM ITEM CLAIM -->
+    <div class="modal-overlay" id="claimModal" onclick="if (event.target === this) closeClaimModal()">
+        <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="claimModalTitle">
+            <div class="modal-header">
+                <span id="claimModalTitle">Claim Item Confirmation</span>
+                <button type="button" class="close-btn" onclick="closeClaimModal()" aria-label="Close claim form" style="background:none; border:0; color:inherit;"><svg class="icon"><use href="#i-close"/></svg></button>
+            </div>
+            <form method="POST" class="claim-form">
+                <p>Enter the verified owner's information for <strong id="claimItemTitle"></strong>. The claim date will be recorded automatically.</p>
+                <input type="hidden" name="claim_item" value="1">
+                <input type="hidden" name="claim_csrf" value="<?php echo htmlspecialchars($_SESSION['claim_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
+                <input type="hidden" name="item_id" id="claimItemId" value="">
+
+                <label for="claimantName">Full Name of Claimant *</label>
+                <input type="text" name="claimant_name" id="claimantName" maxlength="255" placeholder="e.g. Juan Dela Cruz" autocomplete="name" required>
+
+                <label for="claimantYear">Year / Program *</label>
+                <input type="text" name="claimant_year" id="claimantYear" maxlength="100" placeholder="e.g. 2nd Year, BSIT" required>
+
+                <label for="claimantContact">Contact Information (optional)</label>
+                <input type="text" name="claimant_contact" id="claimantContact" maxlength="255" placeholder="Contact number or email" autocomplete="tel">
+
+                <div class="claim-form-actions">
+                    <button type="button" class="claim-cancel" onclick="closeClaimModal()">Cancel</button>
+                    <button type="submit" class="claim-confirm">Confirm and Record Claim</button>
+                </div>
+            </form>
+        </div>
     </div>
 
     <!-- POP-UP MODAL: ITEM POSTING DURATION -->
@@ -1045,8 +1214,9 @@ $student_threads = $conn->query("
                 <span class="close-btn" onclick="toggleReportModal()"><svg class="icon"><use href="#i-close"/></svg></span>
             </div>
             <div class="report-body">
-                <p>Download the Lost & Found report as an Excel file. Leave the dates empty to include every date.</p>
-                <form method="GET" action="export_report.php" onsubmit="setTimeout(toggleReportModal, 600);">
+                <p>Preview the report, including monthly trends and year/department rankings, before downloading it. Leave the dates empty to include every date.</p>
+                <form method="GET" action="export_report.php" target="_blank" onsubmit="setTimeout(toggleReportModal, 600);">
+                    <input type="hidden" name="preview" value="1">
                     <label for="rep_status">Status</label>
                     <select name="status" id="rep_status">
                         <option value="all">All items</option>
@@ -1064,7 +1234,7 @@ $student_threads = $conn->query("
                             <input type="date" name="to" id="rep_to">
                         </div>
                     </div>
-                    <button type="submit" class="report-submit">Download Excel</button>
+                    <button type="submit" class="report-submit">Preview Report</button>
                 </form>
             </div>
         </div>
@@ -1079,7 +1249,16 @@ $student_threads = $conn->query("
             </div>
             <div class="modal-body">
                 <div class="student-list">
-                    <div style="font-size:11px; font-weight:bold; margin-bottom:6px; color:#64748b;">CONVERSATIONS</div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                        <span style="font-size:11px; font-weight:bold; color:#64748b;">CONVERSATIONS</span>
+                        <button type="button" id="siSearchBtn" title="Search names" aria-label="Search names" style="background:none; border:none; cursor:pointer; padding:2px 4px; display:inline-flex; align-items:center; margin-left:auto;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1b357a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        </button>
+                    </div>
+                    <div id="siSearchWrap" style="display:none; margin:0 0 8px;">
+                        <input type="search" id="siSearchInput" placeholder="Search name..." style="width:100%; padding:7px 9px; font-size:12px; border:1px solid #cbd5e1; border-radius:6px;">
+                    </div>
+                    <p id="siNoMatch" style="display:none; font-size:11px; color:#94a3b8; text-align:center; margin:10px 0;">No matching names.</p>
                     <?php if ($student_threads && $student_threads->num_rows > 0): ?>
                         <?php while ($s = $student_threads->fetch_assoc()): 
                             $is_unread = ($s['unread_count'] > 0);
@@ -1115,6 +1294,15 @@ $student_threads = $conn->query("
     <?php render_expiry_popup($expiring_items, 'admin', true); ?>
 
     <script>
+    function toggleSidebar() {
+        var collapsed = document.body.classList.toggle("sidebar-collapsed");
+        var button = document.getElementById("sidebarToggle");
+        var label = collapsed ? "Show navigation" : "Hide navigation";
+        button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        button.setAttribute("aria-label", label);
+        button.title = label;
+    }
+
     var unreadMessageCount = <?php echo intval($count_unread); ?>;
 
     function updateUnreadMessageBadge() {
@@ -1134,6 +1322,11 @@ $student_threads = $conn->query("
         }
     }
 
+    if (new URLSearchParams(window.location.search).get("open") === "messages") {
+        toggleStudentMessagesModal();
+        if (window.history && history.replaceState) history.replaceState(null, "", "admin.php");
+    }
+
     function toggleReportModal() {
         var modal = document.getElementById("reportModal");
         if (modal) {
@@ -1146,6 +1339,18 @@ $student_threads = $conn->query("
         if (modal) {
             modal.style.display = (modal.style.display === "none" || modal.style.display === "") ? "flex" : "none";
         }
+    }
+
+    function openClaimModal(itemId, button) {
+        var modal = document.getElementById("claimModal");
+        document.getElementById("claimItemId").value = itemId;
+        document.getElementById("claimItemTitle").textContent = button.getAttribute("data-item-title") || "this item";
+        modal.style.display = "flex";
+        document.getElementById("claimantName").focus();
+    }
+
+    function closeClaimModal() {
+        document.getElementById("claimModal").style.display = "none";
     }
 
     function previewImages(event) {
@@ -1195,7 +1400,7 @@ $student_threads = $conn->query("
         fetch('mark_read.php', { method: 'POST', body: fd })
             .catch(err => console.error("Error marking as read:", err));
 
-        fetch('fetch_chat.php?student_id=' + studentId)
+        fetch('fetch_messages.php?student_id=' + studentId)
             .then(res => res.text())
             .then(html => {
                 var box = document.getElementById("adminChatBox");
@@ -1205,5 +1410,236 @@ $student_threads = $conn->query("
             .catch(err => console.error("Error loading chat:", err));
     }
     </script>
+    <script>
+document.getElementById('adminReplyForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var form = this;
+    var input = form.querySelector('input[name="message"]');
+    var studentId = document.getElementById('activeStudentId').value;
+    if (!input.value.trim() || !studentId) return;
+
+
+    var fd = new FormData(form);
+    fd.append('send_msg', '1');
+
+
+    fetch('send_message.php', { method: 'POST', body: fd, redirect: 'manual' })
+        .then(function () {
+            input.value = '';
+            return fetch('fetch_messages.php?student_id=' + studentId);
+        })
+        .then(function (res) { return res.text(); })
+        .then(function (html) {
+            var box = document.getElementById('adminChatBox');
+            box.innerHTML = html;
+            box.scrollTop = box.scrollHeight;
+        })
+        .catch(function (err) { console.error('Error sending reply:', err); });
+});
+</script>
+    <script>
+(function () {
+    var items = document.querySelectorAll('.student-item');
+    if (!items.length) return;
+    var list = items[0].parentNode;
+
+    var css = document.createElement('style');
+    css.textContent =
+      '.student-item{position:relative;touch-action:pan-y;user-select:none;}' +
+      '.si-check{display:none;margin-right:8px;width:16px;height:16px;flex-shrink:0;}' +
+      '.select-mode .si-check{display:inline-block;}' +
+      '.select-mode .student-item > span:first-of-type{flex:1;}' +
+      '.si-archive{display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);background:#0b2a6f;color:#fff;border:none;border-radius:6px;padding:6px 10px;font-size:11px;font-weight:bold;cursor:pointer;}' +
+      '.student-item.show-actions .si-archive{display:block;}' +
+      '.select-mode .si-archive{display:none !important;}' +
+      '.si-toolbar{display:none;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;font-size:11px;}' +
+      '.select-mode .si-toolbar{display:flex;}' +
+      '.si-toolbar button{border:1px solid #cbd5e1;background:#fff;border-radius:6px;padding:5px 9px;font-size:11px;cursor:pointer;}' +
+      '.si-select{display:inline-flex;align-items:center;justify-content:center;background:none;border:none;cursor:pointer;padding:2px 4px;}' +
+      '.si-toolbar label{display:none;align-items:center;gap:4px;}' +
+      '.select-mode .si-toolbar label{display:flex;}' +
+      '.si-toolbar .si-go,.si-toolbar .si-done{display:none;}' +
+      '.select-mode .si-toolbar .si-go,.select-mode .si-toolbar .si-done{display:inline-block;}' +
+      '.si-toolbar .si-go{background:#0b2a6f;color:#fff;border-color:#0b2a6f;}' +
+      '.select-mode .si-select{display:none;}';
+    document.head.appendChild(css);
+
+    var bar = document.createElement('div');
+    bar.className = 'si-toolbar';
+    bar.innerHTML =
+      '<button type="button" class="si-select" title="Select conversations to archive" aria-label="Select conversations to archive"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1b357a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg></button>' +
+      '<label><input type="checkbox" class="si-all"> Select all</label>' +
+      '<button type="button" class="si-go">Archive selected (0)</button>' +
+      '<button type="button" class="si-done">Done</button>';
+    list.insertBefore(bar, items[0]);
+
+    var allBox = bar.querySelector('.si-all');
+    var goBtn = bar.querySelector('.si-go');
+    var selBtn = bar.querySelector('.si-select');
+    var searchBtn = document.getElementById('siSearchBtn');
+    if (searchBtn) searchBtn.insertAdjacentElement('afterend', selBtn);
+
+    function sidOf(item) { return item.id.replace('student_item_', ''); }
+    function boxes() {
+        return Array.prototype.filter.call(list.querySelectorAll('.si-check'), function (checkbox) {
+            return checkbox.closest('.student-item').style.display !== 'none';
+        });
+    }
+    function checkedBoxes() {
+        return Array.prototype.filter.call(boxes(), function (checkbox) { return checkbox.checked; });
+    }
+    function syncCount() {
+        var selected = checkedBoxes().length;
+        var visible = boxes().length;
+        goBtn.textContent = 'Archive selected (' + selected + ')';
+        allBox.checked = visible > 0 && selected === visible;
+    }
+    function closeActions() {
+        document.querySelectorAll('.student-item.show-actions').forEach(function (item) {
+            item.classList.remove('show-actions');
+        });
+    }
+    function archive(ids) {
+        if (!confirm('Archive ' + ids.length + ' conversation(s)?\nThey are hidden from the inbox but kept in the database. A new message from the student brings them back.')) return;
+        var formData = new FormData();
+        formData.append('action', 'archive');
+        formData.append('csrf_token', <?php echo json_encode($_SESSION['thread_archive_csrf']); ?>);
+        ids.forEach(function (id) { formData.append('student_ids[]', id); });
+        fetch('manage_threads.php', { method: 'POST', body: formData })
+            .then(function (response) {
+                return response.json().then(function (data) {
+                    if (!response.ok || !data.ok) throw new Error(data.error || 'Could not archive conversations.');
+                    return data;
+                });
+            })
+            .then(function () {
+                var active = document.getElementById('activeStudentId');
+                ids.forEach(function (id) {
+                    var item = document.getElementById('student_item_' + id);
+                    if (item) item.remove();
+                    if (active && active.value === String(id)) {
+                        document.getElementById('adminChatBox').innerHTML =
+                            '<p style="font-size:11px;color:#94a3b8;text-align:center;margin-top:20px;">Conversation archived.</p>';
+                        document.getElementById('activeStudentTitle').textContent = 'Select a student to view messages';
+                        document.getElementById('adminReplyForm').style.display = 'none';
+                        active.value = '';
+                    }
+                });
+                syncCount();
+            })
+            .catch(function (error) { alert(error.message || 'Could not reach the server. Please try again.'); });
+    }
+
+    items.forEach(function (item) {
+        var checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'si-check';
+        checkbox.addEventListener('click', function (event) { event.stopPropagation(); syncCount(); });
+        item.insertBefore(checkbox, item.firstChild);
+
+        var archiveButton = document.createElement('button');
+        archiveButton.type = 'button';
+        archiveButton.className = 'si-archive';
+        archiveButton.textContent = 'Archive';
+        archiveButton.addEventListener('click', function (event) {
+            event.stopPropagation();
+            archive([sidOf(item)]);
+        });
+        item.appendChild(archiveButton);
+    });
+
+    selBtn.onclick = function () {
+        closeActions();
+        list.classList.add('select-mode');
+        syncCount();
+    };
+    bar.querySelector('.si-done').onclick = function () {
+        list.classList.remove('select-mode');
+        boxes().forEach(function (checkbox) { checkbox.checked = false; });
+        syncCount();
+    };
+    allBox.onchange = function () {
+        boxes().forEach(function (checkbox) { checkbox.checked = allBox.checked; });
+        syncCount();
+    };
+    goBtn.onclick = function () {
+        var ids = checkedBoxes().map(function (checkbox) { return sidOf(checkbox.closest('.student-item')); });
+        if (ids.length) archive(ids);
+    };
+
+    var swiped = false, startX = null, startItem = null;
+    list.addEventListener('pointerdown', function (event) {
+        var item = event.target.closest('.student-item');
+        if (!item || list.classList.contains('select-mode')) return;
+        startX = event.clientX;
+        startItem = item;
+    });
+    document.addEventListener('pointerup', function (event) {
+        if (startX === null) return;
+        var deltaX = event.clientX - startX;
+        if (deltaX < -40) { closeActions(); startItem.classList.add('show-actions'); swiped = true; }
+        else if (deltaX > 40) { startItem.classList.remove('show-actions'); swiped = true; }
+        startX = null;
+        startItem = null;
+        setTimeout(function () { swiped = false; }, 50);
+    });
+    document.addEventListener('pointercancel', function () { startX = null; startItem = null; });
+    list.addEventListener('click', function (event) {
+        var item = event.target.closest('.student-item');
+        if (!item) return;
+        if (event.target.classList.contains('si-check') || event.target.classList.contains('si-archive')) return;
+        if (swiped) { event.stopPropagation(); event.preventDefault(); return; }
+        if (list.classList.contains('select-mode')) {
+            event.stopPropagation();
+            event.preventDefault();
+            var checkbox = item.querySelector('.si-check');
+            checkbox.checked = !checkbox.checked;
+            syncCount();
+        }
+    }, true);
+})();
+</script>
+    <script>
+(function () {
+    var button = document.getElementById('siSearchBtn');
+    var wrap = document.getElementById('siSearchWrap');
+    var input = document.getElementById('siSearchInput');
+    var noMatch = document.getElementById('siNoMatch');
+    if (!button || !wrap || !input || !noMatch) return;
+
+    function applyFilter() {
+        var term = input.value.trim().toLowerCase();
+        var shown = 0;
+        document.querySelectorAll('.student-item').forEach(function (item) {
+            var name = item.querySelector('span');
+            var matches = !term || (name || item).textContent.toLowerCase().indexOf(term) !== -1;
+            item.style.display = matches ? '' : 'none';
+            item.classList.remove('show-actions');
+            if (matches) shown++;
+        });
+        noMatch.style.display = term && !shown ? 'block' : 'none';
+        document.querySelectorAll('.si-check').forEach(function (checkbox) { checkbox.checked = false; });
+        var archiveButton = document.querySelector('.si-go');
+        if (archiveButton) archiveButton.textContent = 'Archive selected (0)';
+        var selectAll = document.querySelector('.si-all');
+        if (selectAll) selectAll.checked = false;
+    }
+
+    button.addEventListener('click', function () {
+        var isOpen = wrap.style.display === 'block';
+        wrap.style.display = isOpen ? 'none' : 'block';
+        if (isOpen) { input.value = ''; applyFilter(); }
+        else { input.focus(); }
+    });
+    input.addEventListener('input', applyFilter);
+    input.addEventListener('keydown', function (event) {
+        if (event.key === 'Escape') {
+            input.value = '';
+            wrap.style.display = 'none';
+            applyFilter();
+        }
+    });
+})();
+</script>
 </body>
 </html>

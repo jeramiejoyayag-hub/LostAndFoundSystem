@@ -20,7 +20,6 @@ Set the prompted values in Render's environment settings:
 | `DB_SSL` | `true` if the database provider requires TLS; otherwise `false` |
 | `DB_SSL_CA` | Optional path to a CA certificate, if the provider requires a custom CA |
 | `GOOGLE_CLIENT_ID` | OAuth client ID for this application |
-| `GOOGLE_ALLOWED_DOMAIN` | Allowed student email domain |
 | `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Private object storage configuration |
 | `S3_ENDPOINT` | Optional HTTPS endpoint for non-AWS S3-compatible providers |
 | `S3_PATH_STYLE` | Set to `true` only if required by the provider |
@@ -50,6 +49,7 @@ The script uploads files in `uploads/` using their existing filenames, so databa
 ## Notes
 
 - The service uses Render's ephemeral container filesystem. Do not rely on local uploads for persistent production images.
+- Sign-in and registration require an `@email.lcup.edu.ph` email address.
 - The legacy `reset_admin.php` and `fix_admin.php` credential-reset scripts are excluded from the Docker image.
 - Web Push requires HTTPS and student permission in the browser or device.
 - `/health.php` checks connectivity to MySQL. Check Render's logs and the external services' network allowlists if the health check fails.

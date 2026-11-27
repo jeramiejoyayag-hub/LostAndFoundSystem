@@ -1,4 +1,4 @@
 <?php
-// There is no separate register page anymore. Create Account happens in a pop-up on the main page.
-header("Location: dashboard.php?open=register");
+// New accounts are provisioned through verified LCUP Google sign-in.
+header("Location: dashboard.php?open=login");
 exit();

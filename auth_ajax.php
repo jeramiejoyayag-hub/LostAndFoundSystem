@@ -1,5 +1,5 @@
 <?php
-// Handles the Login / Create Account pop-up on the home screen.
+// Handles sign-in requests from the home screen.
 session_start();
 include 'db.php';
 include 'google_config.php';
@@ -8,6 +8,23 @@ header('Content-Type: application/json');
 function out($data) {
     echo json_encode($data);
     exit();
+}
+
+function email_uses_allowed_domain($email, $domain) {
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        return false;
+    }
+    $at = strrpos($email, '@');
+    return $at !== false && strcasecmp(substr($email, $at + 1), $domain) === 0;
+}
+
+function authenticated_user_role($user) {
+    $role = trim((string)($user['role'] ?? ''));
+    $user_type = trim((string)($user['usertype'] ?? ''));
+    if (strcasecmp($role, 'admin') === 0 || strcasecmp($user_type, 'admin') === 0) {
+        return 'admin';
+    }
+    return $role !== '' ? $role : ($user_type !== '' ? $user_type : 'student');
 }
 
 // Small helper: download a web address (used to check the Google sign-in with Google)
@@ -89,70 +106,21 @@ if ($action === 'login') {
     if (!$ok) {
         out(['success' => false, 'error' => 'Incorrect username/email or password.']);
     }
+    if (!email_uses_allowed_domain($user['email'] ?? '', $GOOGLE_ALLOWED_DOMAIN)) {
+        out(['success' => false, 'error' => 'Please use your Google Suite account.']);
+    }
 
     session_regenerate_id(true);
     $_SESSION['user_id'] = $user['id'];
     $_SESSION['full_name'] = $user['full_name'] ?? $user['username'];
-    $_SESSION['role'] = $user['role'] ?? $user['usertype'] ?? 'student';
+    $_SESSION['role'] = authenticated_user_role($user);
 
     out(['success' => true, 'redirect' => ($_SESSION['role'] === 'admin') ? 'admin.php' : $student_redirect]);
 }
 
-// ------------------------------------------------------------ REGISTER
+// ------------------------------------------------------------ LOCAL REGISTRATION DISABLED
 if ($action === 'register') {
-    $full_name = trim($_POST['full_name'] ?? '');
-    $username = trim($_POST['username'] ?? '');
-    $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
-    $confirm = $_POST['confirm_password'] ?? '';
-
-    if ($full_name === '' || $username === '' || $email === '' || $password === '') {
-        out(['success' => false, 'error' => 'Please fill in all required fields.']);
-    }
-    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        out(['success' => false, 'error' => 'Please enter a valid email address.']);
-    }
-    if (strlen($password) < 6) {
-        out(['success' => false, 'error' => 'Password must be at least 6 characters.']);
-    }
-    if ($password !== $confirm) {
-        out(['success' => false, 'error' => 'Passwords do not match.']);
-    }
-
-    $check = $conn->prepare("SELECT id FROM users WHERE username = ? OR email = ?");
-    if (!$check) {
-        out(['success' => false, 'error' => 'SQL error: ' . $conn->error]);
-    }
-    $check->bind_param("ss", $username, $email);
-    $check->execute();
-    $exists = $check->get_result();
-    if ($exists && $exists->num_rows > 0) {
-        $check->close();
-        out(['success' => false, 'error' => 'Username or email is already registered.']);
-    }
-    $check->close();
-
-    // Everyone who registers here is a student. Admin accounts are created in phpMyAdmin.
-    $role = 'student';
-    $hash = password_hash($password, PASSWORD_DEFAULT);
-    $ins = $conn->prepare("INSERT INTO users (full_name, username, email, password, role) VALUES (?, ?, ?, ?, ?)");
-    if (!$ins) {
-        out(['success' => false, 'error' => 'SQL error: ' . $conn->error]);
-    }
-    $ins->bind_param("sssss", $full_name, $username, $email, $hash, $role);
-    if (!$ins->execute()) {
-        out(['success' => false, 'error' => 'Registration failed: ' . $ins->error]);
-    }
-    $new_id = $ins->insert_id;
-    $ins->close();
-
-    // Log the new student in right away
-    session_regenerate_id(true);
-    $_SESSION['user_id'] = $new_id;
-    $_SESSION['full_name'] = $full_name;
-    $_SESSION['role'] = $role;
-
-    out(['success' => true, 'redirect' => $student_redirect]);
+    out(['success' => false, 'error' => 'Create an account by signing in with your LCUP GSuite account.']);
 }
 
 // ------------------------------------------------------------ GOOGLE SIGN-IN
@@ -191,12 +159,8 @@ if ($action === 'google') {
         $g_name = strstr($g_email, '@', true);
     }
 
-    // Optional: only accept one school domain
-    if (!empty($GOOGLE_ALLOWED_DOMAIN)) {
-        $domain = substr(strrchr($g_email, '@'), 1);
-        if (strcasecmp($domain, $GOOGLE_ALLOWED_DOMAIN) !== 0) {
-            out(['success' => false, 'error' => 'Please sign in with your @' . $GOOGLE_ALLOWED_DOMAIN . ' Google account.']);
-        }
+    if (!email_uses_allowed_domain($g_email, $GOOGLE_ALLOWED_DOMAIN)) {
+        out(['success' => false, 'error' => 'Please use your Google Suite account.']);
     }
 
     // Find the account with this email, or create a student account
@@ -246,7 +210,7 @@ if ($action === 'google') {
     session_regenerate_id(true);
     $_SESSION['user_id'] = $user['id'];
     $_SESSION['full_name'] = $user['full_name'] ?? $user['username'];
-    $_SESSION['role'] = $user['role'] ?? $user['usertype'] ?? 'student';
+    $_SESSION['role'] = authenticated_user_role($user);
 
     out(['success' => true, 'redirect' => ($_SESSION['role'] === 'admin') ? 'admin.php' : $student_redirect]);
 }

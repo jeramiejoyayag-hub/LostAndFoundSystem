@@ -7,6 +7,12 @@ if (!isset($_SESSION['user_id'])) {
     exit();
 }
 
+$sender_role = strtolower($_SESSION['role'] ?? $_SESSION['usertype'] ?? 'student');
+if ($sender_role !== 'admin' && intval($_SESSION['user_id']) !== 1) {
+    http_response_code(403);
+    exit("Only admins can send replies from this endpoint.");
+}
+
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['send_msg'])) {
     $sender_id = intval($_SESSION['user_id']);
     $receiver_id = intval($_POST['receiver_id']);

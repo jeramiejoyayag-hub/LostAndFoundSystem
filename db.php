@@ -1,9 +1,9 @@
 <?php
-$host = getenv('DB_HOST') ?: '127.0.0.1';
-$user = getenv('DB_USER') ?: 'root';
-$password = getenv('DB_PASSWORD');
+$host = getenv('DB_HOST') ?: 'sql309.infinityfree.com';
+$user = getenv('DB_USER') ?: 'if0_43438402';
+$password = getenv('DB_PASSWORD') ?: '1UAZlsL2WPON';
 $password = $password === false ? '' : $password;
-$database = getenv('DB_NAME') ?: 'lost_and_found';
+$database = getenv('DB_NAME') ?: 'if0_43438402_lost_and_found';
 $port = filter_var(getenv('DB_PORT') ?: '3306', FILTER_VALIDATE_INT);
 $port = $port === false ? 3306 : $port;
 $ssl_enabled = filter_var(getenv('DB_SSL') ?: 'false', FILTER_VALIDATE_BOOLEAN);

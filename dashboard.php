@@ -70,25 +70,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['report_missing_item']
     $report_title = trim($_POST['report_title'] ?? '');
     $report_description = trim($_POST['report_description'] ?? '');
     $report_location = trim($_POST['report_location'] ?? '');
+    $report_year_level = trim($_POST['report_year_level'] ?? '');
+    $report_department = trim($_POST['report_department'] ?? '');
     $valid_locations = [
         '', 'MR Building', 'SA Building', 'College of Medicine', 'Andrada Gym',
         'Cassiciacum', 'Parking Lot', 'Carthage', 'Kalinangan', 'Sto. Nino Building',
         'Padre Pio Building', 'Chapel', 'Mini Forest Garden', 'Agostino Building',
     ];
 
-    if ($report_title === '' || $report_description === '') {
-        $missing_report_flash = "Enter the item name and a description to create an alert.";
+    if ($report_title === '' || $report_description === '' || $report_year_level === '' || $report_department === '') {
+        $missing_report_flash = "Enter the item name, description, year, and department to create an alert.";
         $missing_report_is_error = true;
     } elseif (mb_strlen($report_title, 'UTF-8') > 255 || mb_strlen($report_description, 'UTF-8') > 1200) {
         $missing_report_flash = "The item name must be at most 255 characters and the description at most 1200 characters.";
+        $missing_report_is_error = true;
+    } elseif (mb_strlen($report_year_level, 'UTF-8') > 50 || mb_strlen($report_department, 'UTF-8') > 150) {
+        $missing_report_flash = "The year must be at most 50 characters and the department at most 150 characters.";
         $missing_report_is_error = true;
     } elseif (!in_array($report_location, $valid_locations, true)) {
         $missing_report_flash = "Select a valid location or choose Not sure.";
         $missing_report_is_error = true;
     } else {
-        $stmt = $conn->prepare("INSERT INTO missing_item_reports (student_id, title, description, location) VALUES (?, ?, ?, ?)");
+        $stmt = $conn->prepare("INSERT INTO missing_item_reports (student_id, title, description, location, year_level, department) VALUES (?, ?, ?, ?, ?, ?)");
         if ($stmt) {
-            $stmt->bind_param("isss", $user_id, $report_title, $report_description, $report_location);
+            $stmt->bind_param("isssss", $user_id, $report_title, $report_description, $report_location, $report_year_level, $report_department);
             if ($stmt->execute()) {
                 $_SESSION['missing_report_flash'] = "Your missing-item report is saved. We'll alert you if a newly posted found item may match.";
                 $stmt->close();
@@ -242,7 +247,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>La Consolacion University Philippines - Lost & Found</title>
+    <title>Findersync Lost and Found System</title>
     <style>
         :root {
             --navy-dark: #1b357a;
@@ -263,27 +268,31 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             overflow: hidden;
         }
 
-        body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        body { display: flex; }
 
         .sidebar {
-            width: 100%;
+            width: 230px;
             background: linear-gradient(180deg, var(--navy-dark) 0%, var(--navy-light) 100%);
             color: #ffffff;
             display: flex;
-            flex-direction: row;
-            align-items: center;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            flex-direction: column;
+            border-top-right-radius: 20px;
+            border-bottom-right-radius: 20px;
+            box-shadow: 4px 0 15px rgba(0,0,0,0.1);
             flex-shrink: 0;
-            min-height: 64px;
+            height: 100vh;
+            overflow: hidden;
+            transition: width 0.2s ease, flex-basis 0.2s ease;
         }
 
+        body.sidebar-collapsed .sidebar { width: 0; flex-basis: 0; border-radius: 0; box-shadow: none; }
+
         .sidebar-brand {
-            padding: 10px 20px;
+            padding: 20px;
             display: flex;
             align-items: center;
             gap: 12px;
-            border-right: 1px solid rgba(255,255,255,0.1);
-            flex-shrink: 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
         }
 
         .sidebar-brand img {
@@ -297,19 +306,18 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 
         .sidebar-brand h2 { font-size: 12px; line-height: 1.25; margin: 0; font-weight: 700; }
 
-        .sidebar-menu { list-style: none; padding: 0 8px; margin: 0; display: flex; align-items: center; flex-grow: 1; flex-wrap: wrap; }
-        .sidebar-menu li { display: flex; }
+        .sidebar-menu { list-style: none; padding: 15px 0; margin: 0; flex-grow: 1; }
 
         .sidebar-menu li a, .sidebar-menu li button {
             display: flex;
             align-items: center;
             gap: 12px;
-            padding: 12px;
+            padding: 12px 20px;
             color: rgba(255,255,255,0.85);
             text-decoration: none;
             font-size: 13px;
             font-weight: 600;
-            width: auto;
+            width: 100%;
             background: transparent;
             border: none;
             cursor: pointer;
@@ -319,13 +327,13 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         .sidebar-menu li.active a, .sidebar-menu li a:hover, .sidebar-menu li button:hover {
             background: rgba(255, 255, 255, 0.15);
             color: #ffffff;
-            box-shadow: inset 0 -3px var(--amber-accent);
+            border-left: 4px solid var(--amber-accent);
         }
 
         .main-wrapper {
-            flex: 1;
+            flex-grow: 1;
             padding: 20px 25px;
-            min-height: 0;
+            height: 100vh;
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -341,8 +349,12 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             flex-shrink: 0;
         }
 
+        .top-header-title { display: flex; align-items: center; gap: 12px; }
         .top-header-title h1 { color: var(--navy-dark); margin: 0; font-size: 18px; font-weight: 800; }
         .top-header-title p { margin: 2px 0 0 0; color: #6b7280; font-size: 11px; font-weight: 600; }
+        .sidebar-toggle { width: 36px; height: 36px; flex-shrink: 0; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: var(--navy-dark); font-size: 19px; cursor: pointer; }
+        .sidebar-toggle:hover { background: #eff6ff; }
+        .sidebar-toggle:focus-visible { outline: 2px solid var(--navy-light); outline-offset: 2px; }
 
         .search-bar-container {
             display: flex;
@@ -579,6 +591,14 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         .chat-modal-header span.close-btn { cursor: pointer; font-size: 18px; }
         .chat-modal-header button.close-btn { background: transparent; color: #fff; border: 0; cursor: pointer; padding: 0; }
 
+        .chat-form { display: flex; gap: 8px; align-items: flex-end; }
+        .chat-intake-message { display: none; flex: 1; min-height: 40px; max-height: 130px; overflow-y: auto; padding: 10px 14px; border: 1px solid #ccc; border-radius: 8px; background: #fff; color: #111827; font: inherit; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+        .chat-form.intake-mode #intakeMessage { display: block; }
+        .chat-form.intake-mode #chatInput { display: none; }
+        .chat-intake-locked { color: #94a3b8; }
+        .chat-intake-value { display: inline-block; min-width: 1ch; color: #111827; outline: none; white-space: pre-wrap; }
+        .chat-intake-value:empty::before { content: attr(data-placeholder); color: #94a3b8; }
+        .chat-intake-item { display: block; min-height: 1.5em; }
         .chat-modal-body {
             padding: 18px;
             display: flex;
@@ -670,7 +690,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         .quick-replies button:hover { background: #1b357a; color: #ffffff; }
         .new-dot { background: #dc2626; color: #fff; font-size: 9px; font-weight: bold; padding: 2px 6px; border-radius: 10px; margin-left: auto; }
 
-        /* ===== Login / Create Account pop-up ===== */
+        /* ===== Sign-in pop-up ===== */
         .auth-card {
             background: #ffffff;
             width: 92%;
@@ -684,21 +704,6 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         }
         .auth-body { padding: 18px 20px 22px; overflow-y: auto; }
         .auth-note { margin: 0 0 14px 0; font-size: 12px; color: #64748b; line-height: 1.5; }
-        .auth-tabs { display: flex; border-bottom: 2px solid #e2e8f0; margin-bottom: 14px; }
-        .auth-tabs button {
-            flex: 1;
-            background: transparent;
-            border: none;
-            padding: 9px;
-            font-size: 12px;
-            font-weight: 700;
-            color: #64748b;
-            cursor: pointer;
-            border-bottom: 3px solid transparent;
-            margin-bottom: -2px;
-            font-family: inherit;
-        }
-        .auth-tabs button.active { color: var(--navy-dark); border-bottom-color: var(--amber-accent); }
         .auth-body label { display: block; font-size: 11px; font-weight: 700; margin-bottom: 3px; text-transform: uppercase; }
         .auth-input {
             width: 100%;
@@ -710,6 +715,28 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             font-family: inherit;
             outline: none;
         }
+        .password-input-wrap { position: relative; margin-bottom: 11px; }
+        .password-input-wrap .auth-input { padding-right: 42px; margin-bottom: 0; }
+        .password-toggle {
+            position: absolute;
+            top: 50%;
+            right: 7px;
+            transform: translateY(-50%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            border: 0;
+            border-radius: 5px;
+            background: transparent;
+            color: #64748b;
+            cursor: pointer;
+        }
+        .password-toggle:hover { color: var(--navy-dark); }
+        .password-toggle:focus-visible { outline: 2px solid var(--navy-light); outline-offset: 1px; }
+        .password-toggle svg { width: 18px; height: 18px; }
         .auth-input:focus { border-color: var(--navy-light); box-shadow: 0 0 0 3px rgba(42, 79, 167, 0.15); }
         .auth-row { display: flex; gap: 10px; }
         .auth-row > div { flex: 1; min-width: 0; }
@@ -747,11 +774,6 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         .claim-help-button { width:32px; height:32px; flex-shrink:0; border:0; border-radius:50%; background:var(--navy-dark); color:#fff; font-size:19px; font-weight:800; cursor:pointer; }
         .claim-help-button:hover { background:var(--navy-light); }
         @media (max-width: 650px) {
-            .sidebar { align-items: stretch; flex-wrap: wrap; }
-            .sidebar-brand { width: 100%; border-right: 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
-            .sidebar-menu { padding: 4px; }
-            .sidebar-menu li a, .sidebar-menu li button { gap: 7px; padding: 10px 8px; font-size: 11px; }
-            .sidebar-foot { padding: 10px; }
             .main-wrapper { padding: 14px; }
             .top-header-bar { flex-wrap: wrap; }
             .search-bar-container { max-width: none; }
@@ -764,7 +786,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="i-dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol><symbol id="i-plus" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></symbol><symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol><symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></symbol><symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></symbol><symbol id="i-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></symbol><symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol><symbol id="i-pin" viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></symbol><symbol id="i-id" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="12" r="2"/><line x1="14" y1="10" x2="18" y2="10"/><line x1="14" y1="14" x2="18" y2="14"/></symbol><symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></symbol><symbol id="i-close" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol><symbol id="i-bot" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></symbol><symbol id="i-mail" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22 6 12 13 2 6"/></symbol><symbol id="i-package" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></symbol><symbol id="i-inbox" viewBox="0 0 24 24"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></symbol><symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></symbol><symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol><symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol><symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></symbol><symbol id="i-login" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></symbol><symbol id="i-hash" viewBox="0 0 24 24"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></symbol><symbol id="i-archive" viewBox="0 0 24 24"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></symbol><symbol id="i-paperclip" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol><symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></symbol></svg>
 
     <!-- Sidebar -->
-    <div class="sidebar">
+    <div class="sidebar" id="sidebar">
         <div class="sidebar-brand">
             <img src="logo.jpg" alt="LCUP Logo" onerror="this.style.display='none'">
             <h2>La Consolacion University Philippines</h2>
@@ -775,14 +797,14 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                 <li><a href="admin.php"><svg class="icon"><use href="#i-shield"/></svg>Admin Control</a></li>
             <?php else: ?>
                 <li><button onclick="openMessageAdmin()"><svg class="icon"><use href="#i-chat"/></svg>Message Admin <span class="new-dot" id="msgDot" style="display:none;">New</span></button></li>
+                <?php if (!$is_logged_in): ?>
+                    <li><button onclick="openAuthModal()"><svg class="icon"><use href="#i-login"/></svg>Staff / Admin login</button></li>
+                <?php endif; ?>
             <?php endif; ?>
             <?php if ($is_logged_in): ?>
                 <li><a href="logout.php"><svg class="icon"><use href="#i-logout"/></svg>Logout</a></li>
             <?php endif; ?>
         </ul>
-        <?php if (!$is_logged_in): ?>
-            <div class="sidebar-foot"><a href="#" onclick="openAuthModal(); return false;">Staff / Admin login</a></div>
-        <?php endif; ?>
     </div>
 
     <!-- Main Outer Wrapper -->
@@ -791,8 +813,11 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         <!-- Top Header Bar -->
         <div class="top-header-bar">
             <div class="top-header-title">
-                <h1>LA CONSOLACION UNIVERSITY PHILIPPINES</h1>
-                <p>Lost & Found System Portal</p>
+                <button type="button" class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" aria-controls="sidebar" aria-expanded="true" aria-label="Hide navigation" title="Hide navigation"><span aria-hidden="true">☰</span></button>
+                <div>
+                    <h1>Findersync Lost and Found System</h1>
+                    <p>Student Dashboard</p>
+                </div>
             </div>
 
             <form method="GET" class="search-bar-container">
@@ -846,17 +871,9 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <span style="font-weight:bold; font-size:12px; color:#475569;"><span class="serial-badge"><?php echo htmlspecialchars($serial_label); ?></span><svg class="icon"><use href="#i-pin"/></svg><?php echo (($row['item_type'] ?? '') === 'Found') ? 'Found at: ' : 'Location: '; ?><?php echo htmlspecialchars($row['location']); ?></span>
                                 <?php
-                                // Badge: CLAIMED once returned, otherwise MISSING or FOUND
-                                $type_src = $row['item_type'] ?? '';
-                                if ($type_src === '') {
-                                    $type_src = in_array(strtolower($row['status']), ['missing', 'found']) ? $row['status'] : 'Missing';
-                                }
                                 if ($row['status'] === 'Claimed') {
                                     $badge_text = 'CLAIMED';
                                     $badge_style = '#dcfce7; color:#166534;';
-                                } elseif (strtolower($type_src) === 'found') {
-                                    $badge_text = 'FOUND';
-                                    $badge_style = '#dbeafe; color:#1e40af;';
                                 } else {
                                     $badge_text = 'MISSING';
                                     $badge_style = '#fef3c7; color:#92400e;';
@@ -943,13 +960,7 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                 <?php if ($is_student): ?>
                     <div class="panel-card">
                         <h3 class="panel-title"><svg class="icon"><use href="#i-bell"/></svg>Get alerts for a missing item</h3>
-                        <p style="font-size:11px; color:#64748b; line-height:1.5;">Submit the item details once. We'll notify you when a newly posted found item may match. Device alerts require HTTPS (localhost is supported) and the server to be running.</p>
-                        <button type="button" id="devicePushButton" class="auth-submit" onclick="toggleDeviceNotifications()" <?php echo $web_push_available ? '' : 'disabled'; ?>>
-                            <?php echo $web_push_subscribed ? 'Turn off device notifications' : 'Enable device notifications'; ?>
-                        </button>
-                        <p id="devicePushStatus" role="status" style="font-size:11px; color:#64748b; line-height:1.5; margin:6px 0 12px;">
-                            <?php echo $web_push_available ? ($web_push_subscribed ? 'Device notifications are enabled on this browser.' : 'Allow notifications to receive match alerts and admin replies on this device, even when this page is closed.') : 'Device notifications are not configured on this server.'; ?>
-                        </p>
+                        <p style="font-size:11px; color:#64748b; line-height:1.5;">Submit the item details once. We'll notify you here when a newly posted found item may match.</p>
                         <?php if ($missing_report_flash !== ''): ?>
                             <div class="alert <?php echo $missing_report_is_error ? 'alert-danger' : 'alert-success'; ?>">
                                 <?php echo htmlspecialchars($missing_report_flash); ?>
@@ -959,6 +970,10 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                             <input type="hidden" name="report_missing_item" value="1">
                             <label for="report_title" style="display:block; font-size:11px; font-weight:bold;">Item name *</label>
                             <input id="report_title" name="report_title" type="text" maxlength="255" required style="width:100%; padding:8px; margin:4px 0 8px; border:1px solid #ccc; border-radius:5px;">
+                            <label for="report_year_level" style="display:block; font-size:11px; font-weight:bold;">Year level *</label>
+                            <input id="report_year_level" name="report_year_level" type="text" maxlength="50" placeholder="e.g. 1st year" required style="width:100%; padding:8px; margin:4px 0 8px; border:1px solid #ccc; border-radius:5px;">
+                            <label for="report_department" style="display:block; font-size:11px; font-weight:bold;">Department *</label>
+                            <input id="report_department" name="report_department" type="text" maxlength="150" placeholder="Enter your department" required style="width:100%; padding:8px; margin:4px 0 8px; border:1px solid #ccc; border-radius:5px;">
                             <label for="report_description" style="display:block; font-size:11px; font-weight:bold;">Description and identifying details *</label>
                             <textarea id="report_description" name="report_description" maxlength="1200" rows="3" required style="width:100%; padding:8px; margin:4px 0 8px; border:1px solid #ccc; border-radius:5px; font-family:inherit;"></textarea>
                             <label for="report_location" style="display:block; font-size:11px; font-weight:bold;">Last known location (optional)</label>
@@ -1013,25 +1028,20 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
     </div>
 
     <?php if (!$is_logged_in): ?>
-    <!-- POP-UP: LOGIN / CREATE ACCOUNT (guests) -->
+    <!-- POP-UP: SIGN IN (guests) -->
     <div class="chat-modal-overlay" id="authModal">
         <div class="auth-card">
             <div class="chat-modal-header">
-                <span><svg class="icon"><use href="#i-login"/></svg>Sign in to message the admin</span>
+                <span><svg class="icon"><use href="#i-login"/></svg>Sign in</span>
                 <span class="close-btn" onclick="closeAuthModal()"><svg class="icon"><use href="#i-close"/></svg></span>
             </div>
             <div class="auth-body">
-                <p class="auth-note">You can browse every item without an account. You only need to log in to message the admin and confirm that an item is yours.</p>
+                <p class="auth-note">Only LCUP GSuite accounts can sign in.</p>
 
                 <?php if ($google_enabled): ?>
                     <div id="googleBtn"></div>
                     <div class="auth-or">or use your account</div>
                 <?php endif; ?>
-
-                <div class="auth-tabs">
-                    <button type="button" id="tabLogin" class="active" onclick="switchAuthTab('login')">Login</button>
-                    <button type="button" id="tabRegister" onclick="switchAuthTab('register')">Create Account</button>
-                </div>
 
                 <div id="authError" class="alert alert-danger" style="display:none;"></div>
 
@@ -1039,35 +1049,19 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                     <label for="login_id">Email or Username</label>
                     <input class="auth-input" type="text" id="login_id" name="email_or_username" required autocomplete="username">
                     <label for="login_password">Password</label>
-                    <input class="auth-input" type="password" id="login_password" name="password" required autocomplete="current-password">
+                    <div class="password-input-wrap">
+                        <input class="auth-input" type="password" id="login_password" name="password" required autocomplete="current-password">
+                        <button type="button" class="password-toggle" aria-label="Show password" aria-pressed="false" aria-controls="login_password" onclick="togglePasswordVisibility('login_password', this)">
+                            <svg class="password-eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+                                <circle cx="12" cy="12" r="3"/>
+                                <path class="password-eye-slash" d="M3 3l18 18"/>
+                            </svg>
+                        </button>
+                    </div>
                     <button type="submit" class="auth-submit">Login</button>
                 </form>
 
-                <form id="registerForm" style="display:none;" onsubmit="return submitAuth(event, 'register')">
-                    <label for="reg_full_name">Full Name</label>
-                    <input class="auth-input" type="text" id="reg_full_name" name="full_name" required>
-                    <div class="auth-row">
-                        <div>
-                            <label for="reg_username">Username</label>
-                            <input class="auth-input" type="text" id="reg_username" name="username" required autocomplete="username">
-                        </div>
-                        <div>
-                            <label for="reg_email">Email</label>
-                            <input class="auth-input" type="email" id="reg_email" name="email" required autocomplete="email">
-                        </div>
-                    </div>
-                    <div class="auth-row">
-                        <div>
-                            <label for="reg_password">Password</label>
-                            <input class="auth-input" type="password" id="reg_password" name="password" minlength="6" required autocomplete="new-password">
-                        </div>
-                        <div>
-                            <label for="reg_confirm">Confirm Password</label>
-                            <input class="auth-input" type="password" id="reg_confirm" name="confirm_password" minlength="6" required autocomplete="new-password">
-                        </div>
-                    </div>
-                    <button type="submit" class="auth-submit">Create Account</button>
-                </form>
             </div>
         </div>
     </div>
@@ -1084,7 +1078,14 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             <div class="chat-modal-body">
                 <div id="studentChatHistory" class="chat-history-box"></div>
                 <div id="quickReplies" class="quick-replies"></div>
-                <form id="chatForm" onsubmit="return sendChatForm(event)" style="display:flex; gap:8px; align-items:flex-end;">
+                <form id="chatForm" class="chat-form" onsubmit="return sendChatForm(event)">
+                    <div id="intakeMessage" class="chat-intake-message" role="group" aria-label="Ownership inquiry details">
+                        <div><span class="chat-intake-locked" contenteditable="false">Name: <span id="intakeAccountName"></span></span></div>
+                        <div><span class="chat-intake-locked" contenteditable="false">Year &amp; Section: </span><span id="intakeYearSection" class="chat-intake-value" contenteditable="true" role="textbox" aria-label="Year and section" data-placeholder=""></span></div>
+                        <div><span class="chat-intake-locked" contenteditable="false">Contact No.: </span><span id="intakeContact" class="chat-intake-value" contenteditable="true" role="textbox" aria-label="Contact number" data-placeholder=""></span></div>
+                        <div><span class="chat-intake-locked" contenteditable="false">Email: <span id="intakeAccountEmail"></span></span></div>
+                        <div><span class="chat-intake-locked" contenteditable="false">About the item/s: </span><div id="intakeItemDetails" class="chat-intake-value chat-intake-item" contenteditable="true" role="textbox" aria-label="About the item"></div></div>
+                    </div>
                     <textarea id="chatInput" rows="1" maxlength="1500" placeholder="Type your message..." style="flex-grow:1; padding:10px 14px; border-radius:8px; border:1px solid #ccc; font-size:13px;"></textarea>
                     <button type="submit" id="chatSendBtn" style="background:var(--navy-dark); color:#fff; border:none; padding:10px 18px; border-radius:8px; cursor:pointer; font-size:13px; font-weight:bold; height:40px;">Send</button>
                 </form>
@@ -1118,6 +1119,15 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
     <?php render_expiry_popup($expiring_items, $is_admin ? 'admin' : 'student'); ?>
 
     <script>
+    function toggleSidebar() {
+        var collapsed = document.body.classList.toggle("sidebar-collapsed");
+        var button = document.getElementById("sidebarToggle");
+        var label = collapsed ? "Show navigation" : "Hide navigation";
+        button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        button.setAttribute("aria-label", label);
+        button.title = label;
+    }
+
     var IS_LOGGED_IN = <?php echo $is_logged_in ? 'true' : 'false'; ?>;
     var IS_STUDENT = <?php echo $is_student ? 'true' : 'false'; ?>;
     var MY_ID = <?php echo intval($user_id); ?>;
@@ -1144,6 +1154,17 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         var m = document.getElementById("authModal");
         if (m) m.style.display = "flex";
         renderGoogleButton();
+    }
+
+    function togglePasswordVisibility(inputId, button) {
+        var input = document.getElementById(inputId);
+        if (!input) return;
+        var showPassword = input.type === "password";
+        input.type = showPassword ? "text" : "password";
+        button.setAttribute("aria-label", showPassword ? "Hide password" : "Show password");
+        button.setAttribute("aria-pressed", showPassword ? "true" : "false");
+        var eyeSlash = button.querySelector(".password-eye-slash");
+        if (eyeSlash) eyeSlash.style.display = showPassword ? "none" : "";
     }
 
     function toggleClaimHelpModal(show) {
@@ -1193,13 +1214,6 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
     function closeAuthModal() {
         var m = document.getElementById("authModal");
         if (m) m.style.display = "none";
-    }
-    function switchAuthTab(tab) {
-        document.getElementById("loginForm").style.display = (tab === "login") ? "block" : "none";
-        document.getElementById("registerForm").style.display = (tab === "register") ? "block" : "none";
-        document.getElementById("tabLogin").classList.toggle("active", tab === "login");
-        document.getElementById("tabRegister").classList.toggle("active", tab === "register");
-        showAuthError("");
     }
     function showAuthError(text) {
         var box = document.getElementById("authError");
@@ -1326,7 +1340,8 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         }
         var box = document.getElementById("studentChatHistory");
         box.scrollTop = box.scrollHeight;
-        document.getElementById("chatInput").focus();
+        if (intake) document.getElementById("intakeYearSection").focus();
+        else document.getElementById("chatInput").focus();
     }
 
     /* ---------------------------------------------------------- The assistant: ONE message with a short form */
@@ -1335,82 +1350,60 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         intake = { item: item || null };
         setChips([]);
 
-        var msg = "Hello! I am the LCUP Lost & Found Assistant. To help the admin confirm that the item is yours, please send these details in one message:\n\n"
-                + "- Name\n"
-                + "- Year & Section\n"
-                + "- Contact No.\n"
-                + "- Email\n"
-                + "- About the item/s (what it looks like, any marks or contents, and where and when you lost it)\n\n"
-                + "I filled in the form in the box below. Just complete it and press Send.";
+        var msg = "Hello! I am the LCUP Lost & Found Assistant. To help the admin confirm that the item is yours, complete the fields below.\n\n"
+                + "Privacy reminder: The information you send is saved in this system and visible to administrators reviewing your inquiry. Please share only the requested details; never send your password or unrelated sensitive information.\n\n"
+                + "Your name and email are filled in from your account and cannot be edited. Enter your Year & Section, Contact No., and details about the item, then press Send.";
         if (item) msg = "You are asking about item " + item.serial + " (" + item.title + ").\n\n" + msg;
         addBubble("bot", msg, BOT);
 
-        fillIntakeTemplate();
+        showIntakeFields();
     }
 
-    function fillIntakeTemplate() {
+    function showIntakeFields() {
+        var form = document.getElementById("chatForm");
         var input = document.getElementById("chatInput");
-        var yearLine = "Year & Section: ";
-        input.value = "Name: " + ACCOUNT_NAME + "\n" + yearLine + "\nContact No.: \nEmail: " + ACCOUNT_EMAIL + "\nAbout the item/s: ";
-        input.placeholder = "Fill in the details...";
-        autosizeChat();
-        input.focus();
-        var pos = input.value.indexOf(yearLine) + yearLine.length;
-        input.setSelectionRange(pos, pos);
+        document.getElementById("intakeAccountName").textContent = ACCOUNT_NAME;
+        document.getElementById("intakeAccountEmail").textContent = ACCOUNT_EMAIL;
+        document.getElementById("intakeYearSection").textContent = "";
+        document.getElementById("intakeContact").textContent = "";
+        document.getElementById("intakeItemDetails").textContent = "";
+        form.classList.add("intake-mode");
+        input.value = "";
+        document.getElementById("intakeYearSection").focus();
     }
 
-    // Reads the details out of the message the student filled in
-    function parseIntake(text) {
-        var m = text.match(/About the item(?:\/s|s)?\s*:([\s\S]*)$/i);
-        var item = m ? m[1].trim() : "";
-        var head = m ? text.slice(0, m.index) : text;
-        function line(re) {
-            var x = head.match(re);
-            return x ? x[1].trim() : "";
-        }
-        return {
-            name: line(/^\s*Name\s*:(.*)$/im),
-            year_section: line(/^\s*Year\s*&\s*Section\s*:(.*)$/im),
-            contact: line(/^\s*Contact(?:\s*No\.?)?\s*:(.*)$/im),
-            email: line(/^\s*Email\s*:(.*)$/im),
-            item: item
-        };
-    }
-
-    function sendIntake(text) {
-        var p = parseIntake(text);
+    function sendIntake() {
+        var yearSection = document.getElementById("intakeYearSection").textContent.trim();
+        var contact = document.getElementById("intakeContact").textContent.trim();
+        var itemDetails = document.getElementById("intakeItemDetails").innerText.trim();
         var missing = [];
-        if (!p.name) missing.push("Name");
-        if (!p.year_section) missing.push("Year & Section");
-        if (!p.contact) missing.push("Contact No.");
-        if (!p.email) missing.push("Email");
-        if (!p.item) missing.push("About the item/s");
+        if (!yearSection) missing.push("Year & Section");
+        if (!contact) missing.push("Contact No.");
+        if (!itemDetails) missing.push("About the item/s");
         if (missing.length) {
             addBubble("bot", "Please complete: " + missing.join(", ") + ".", BOT);
             return false;
         }
-        if (!/^[0-9+()\-\s]{7,20}$/.test(p.contact)) {
+        if (!/^[0-9+()\-\s]{7,20}$/.test(contact)) {
             addBubble("bot", "That does not look like a contact number. Please use numbers only, for example 09123456789.", BOT);
-            return false;
-        }
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(p.email)) {
-            addBubble("bot", "That does not look like an email address. Please check it, for example name@email.com.", BOT);
             return false;
         }
 
         var fd = new FormData();
         fd.append("action", "inquiry");
-        fd.append("name", p.name);
-        fd.append("year_section", p.year_section);
-        fd.append("contact", p.contact);
-        fd.append("email", p.email);
-        fd.append("item", p.item);
+        fd.append("year_section", yearSection);
+        fd.append("contact", contact);
+        fd.append("item", itemDetails);
         fd.append("item_id", intake.item ? intake.item.id : 0);
 
         postChat(fd, function(message) {
             addBubble("me", message.message, "", message.time);
-            addBubble("bot", "Your details were sent to the admin. Please wait for the admin to reply in this chat. You can keep typing below.", BOT);
+            addBubble("bot", "Your details were sent to the admin. Please wait for the admin to reply in this chat.", BOT);
             intake = null;
+            document.getElementById("chatForm").classList.remove("intake-mode");
+            document.getElementById("intakeYearSection").textContent = "";
+            document.getElementById("intakeContact").textContent = "";
+            document.getElementById("intakeItemDetails").textContent = "";
             document.getElementById("chatInput").value = "";
             document.getElementById("chatInput").placeholder = "Type your message...";
             autosizeChat();
@@ -1420,19 +1413,62 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 
     /* ---------------------------------------------------------- Sending */
     var sending = false;
+    var chatCooldownUntil = 0;
+    var chatCooldownTimeout = null;
+    var cooldownNoticeShown = false;
+
+    function updateChatCooldown(seconds) {
+        var duration = Math.max(0, Math.ceil(Number(seconds) || 0));
+        var input = document.getElementById("chatInput");
+        var button = document.getElementById("chatSendBtn");
+        if (chatCooldownTimeout) {
+            clearTimeout(chatCooldownTimeout);
+            chatCooldownTimeout = null;
+        }
+        if (duration > 0) {
+            chatCooldownUntil = Date.now() + duration * 1000;
+            input.disabled = true;
+            button.disabled = true;
+            button.title = "Messaging has been temporarily paused to prevent excessive messages. Please try again in 15 minutes.";
+            input.placeholder = "Messaging paused for " + Math.ceil(duration / 60) + " minute(s)";
+            chatCooldownTimeout = setTimeout(function() {
+                chatCooldownUntil = 0;
+                input.disabled = false;
+                button.disabled = sending;
+                button.title = "";
+                input.placeholder = "Type your message...";
+                chatCooldownTimeout = null;
+            }, duration * 1000);
+            return;
+        }
+        chatCooldownUntil = 0;
+        input.disabled = false;
+        button.disabled = sending;
+        button.title = "";
+        input.placeholder = "Type your message...";
+    }
 
     function postChat(fd, onSuccess) {
-        if (sending) return;
+        if (sending || chatCooldownUntil > Date.now()) return;
         sending = true;
         document.getElementById("chatSendBtn").disabled = true;
-        fetch("student_chat.php", { method: "POST", body: fd, credentials: "same-origin" })
+        fetch("messages_api.php", { method: "POST", body: fd, credentials: "same-origin" })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (data.success) {
                     lastMsgId = Math.max(lastMsgId, data.message.id);
                     onSuccess(data.message);
+                    updateChatCooldown(data.cooldown_seconds);
+                    if (data.cooldown_seconds > 0) {
+                        cooldownNoticeShown = true;
+                        addBubble("bot", "Messaging has been temporarily paused to prevent excessive messages. Please try again in 15 minutes.", BOT);
+                    }
                 } else {
                     addBubble("bot", data.error || "Your message could not be sent.", BOT);
+                    if (data.cooldown_seconds > 0) {
+                        updateChatCooldown(data.cooldown_seconds);
+                        cooldownNoticeShown = true;
+                    }
                 }
             })
             .catch(function() {
@@ -1440,17 +1476,16 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
             })
             .then(function() {
                 sending = false;
-                document.getElementById("chatSendBtn").disabled = false;
+                document.getElementById("chatSendBtn").disabled = chatCooldownUntil > Date.now();
             });
     }
 
     function sendChatForm(e) {
         e.preventDefault();
+        if (intake) return sendIntake();
         var input = document.getElementById("chatInput");
         var text = input.value.trim();
         if (!text) return false;
-
-        if (intake) return sendIntake(text);
 
         var fd = new FormData();
         fd.append("action", "send");
@@ -1539,12 +1574,17 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
 
     function pollMessages() {
         if (!IS_STUDENT) return;
-        fetch("student_chat.php?action=history&after_id=" + lastMsgId, { credentials: "same-origin" })
+        fetch("messages_api.php?action=history&after_id=" + lastMsgId, { credentials: "same-origin" })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (!data.success) {
                     console.error(data.error || "Could not load messages and item alerts.");
                     return;
+                }
+                updateChatCooldown(data.cooldown_seconds);
+                if (data.cooldown_seconds > 0 && !cooldownNoticeShown) {
+                    cooldownNoticeShown = true;
+                    addBubble("bot", "Messaging has been temporarily paused to prevent excessive messages. Please try again in 15 minutes.", BOT);
                 }
                 data.messages.forEach(function(m) {
                     lastMsgId = Math.max(lastMsgId, m.id);
@@ -1740,6 +1780,36 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
                     sendChatForm(e);
                 }
             });
+            var intakeYearSection = document.getElementById("intakeYearSection");
+            var intakeContact = document.getElementById("intakeContact");
+            var intakeItemDetails = document.getElementById("intakeItemDetails");
+            intakeYearSection.addEventListener("keydown", function(e) {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    intakeContact.focus();
+                }
+            });
+            intakeContact.addEventListener("keydown", function(e) {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    intakeItemDetails.focus();
+                }
+            });
+            intakeItemDetails.addEventListener("keydown", function(e) {
+                if (e.key === "Enter" && !e.shiftKey) sendChatForm(e);
+            });
+            [intakeYearSection, intakeContact].forEach(function(field) {
+                field.addEventListener("paste", function(e) {
+                    var pasted = e.clipboardData ? e.clipboardData.getData("text") : "";
+                    if (/[\r\n]/.test(pasted)) e.preventDefault();
+                });
+            });
+            [[intakeYearSection, 60], [intakeContact, 30], [intakeItemDetails, 600]].forEach(function(entry) {
+                entry[0].addEventListener("input", function() {
+                    var value = this.innerText || this.textContent || "";
+                    if (value.length > entry[1]) this.textContent = value.slice(0, entry[1]);
+                });
+            });
         }
 
         // After logging in, continue where the student was
@@ -1755,7 +1825,6 @@ $json_flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT;
         }
         if (open && !IS_LOGGED_IN && (open === 'login' || open === 'register')) {
             openAuthModal();
-            if (open === 'register') switchAuthTab('register');
             if (window.history && history.replaceState) history.replaceState(null, "", "dashboard.php");
         }
     });

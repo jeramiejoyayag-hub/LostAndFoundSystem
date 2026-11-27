@@ -9,6 +9,8 @@ function ensure_missing_item_reports_table($conn) {
             title VARCHAR(255) NOT NULL,
             description TEXT NOT NULL,
             location VARCHAR(255) NULL,
+            year_level VARCHAR(50) NULL,
+            department VARCHAR(150) NULL,
             status VARCHAR(20) NOT NULL DEFAULT 'Active',
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_missing_report_status (status),
@@ -16,6 +18,23 @@ function ensure_missing_item_reports_table($conn) {
         )
     ");
     if (!$reports_created) return false;
+
+    $report_columns = $conn->query("SHOW COLUMNS FROM missing_item_reports");
+    if (!$report_columns) return false;
+    $existing_columns = [];
+    while ($column = $report_columns->fetch_assoc()) {
+        $existing_columns[$column['Field']] = true;
+    }
+
+    $columns_to_add = [
+        'year_level' => 'VARCHAR(50) NULL',
+        'department' => 'VARCHAR(150) NULL',
+    ];
+    foreach ($columns_to_add as $name => $definition) {
+        if (!isset($existing_columns[$name]) && !$conn->query("ALTER TABLE missing_item_reports ADD COLUMN $name $definition")) {
+            return false;
+        }
+    }
 
     return (bool)$conn->query("
         CREATE TABLE IF NOT EXISTS missing_item_alerts (
